@@ -1,0 +1,5 @@
+target/
+.tools/
+data/
+*.log
+.idea/
