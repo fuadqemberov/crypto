@@ -26,6 +26,9 @@ public final class Journal implements AutoCloseable {
         channel=FileChannel.open(path,CREATE,READ,WRITE);
     }
     public Account load(double initialBalance) throws IOException {
+        return load(initialBalance, event -> {});
+    }
+    public Account load(double initialBalance, java.util.function.Consumer<Event> listener) throws IOException {
         Account current=new Account(); current.cash=initialBalance;
         long validEnd=0;
         try(RandomAccessFile file=new RandomAccessFile(path.toFile(),"r")) {
@@ -43,15 +46,17 @@ public final class Journal implements AutoCloseable {
                     if(event.sequence()!=current.sequence+1 || event.account()==null || event.account().sequence!=event.sequence()
                             || !Double.isFinite(event.account().cash) || event.account().positions==null)
                         throw new IOException("Invalid event sequence/account");
-                    current=event.account(); validEnd=end;
+                    current=event.account(); validEnd=end; listener.accept(event);
                 } catch(Exception ex) { throw new IOException("Corrupt journal at byte "+start+"; refusing to reset balance",ex); }
             }
         }
         channel.position(channel.size()); return current;
     }
-    public void append(String type,String detail,Account account) throws IOException {
-        byte[] bytes=(json.writeValueAsString(new Event(account.sequence,System.currentTimeMillis(),type,detail,account))+"\n").getBytes(StandardCharsets.UTF_8);
+    public Event append(String type,String detail,Account account) throws IOException {
+        Event event=new Event(account.sequence,System.currentTimeMillis(),type,detail,account);
+        byte[] bytes=(json.writeValueAsString(event)+"\n").getBytes(StandardCharsets.UTF_8);
         ByteBuffer buffer=ByteBuffer.wrap(bytes); while(buffer.hasRemaining()) channel.write(buffer); channel.force(true);
+        return event;
     }
     public Account copy(Account a) { return json.convertValue(a,Account.class); }
     @Override public void close() throws IOException { channel.close(); lock.release(); lockChannel.close(); }

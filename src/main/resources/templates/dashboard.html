@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="az" xmlns:th="http://www.thymeleaf.org">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Futures Lab — balans, virtual orderlər və çoxintervalı bazar analizi.">
+  <title>Futures Lab · Ticarət terminalı</title>
+  <link rel="icon" type="image/svg+xml" th:href="@{/favicon.svg}">
+  <link rel="stylesheet" th:href="@{/css/dashboard.css}">
+  <script defer th:src="@{/js/dashboard.js}"></script>
+</head>
+<body>
+<a class="skip-link" href="#workspace">Məzmunu aç</a>
+<aside class="sidebar">
+  <a class="brand" href="/" aria-label="Futures Lab ana səhifə"><span class="brand-mark">◈</span> FUTURES<span class="brand-lab">LAB</span></a>
+  <div class="sidebar-label">İŞ SAHƏSİ</div>
+  <nav aria-label="Əsas naviqasiya">
+    <a class="nav-item active" href="#overview"><span aria-hidden="true">▦</span> İcmal</a>
+    <a class="nav-item" href="#market"><span aria-hidden="true">⌁</span> Bazar</a>
+    <a class="nav-item" href="#orders"><span aria-hidden="true">▤</span> Orderlər</a>
+    <a class="nav-item" href="#analysis"><span aria-hidden="true">◎</span> Siqnal analizi</a>
+    <a class="nav-item" href="#activity"><span aria-hidden="true">◷</span> Əməliyyat jurnalı</a>
+  </nav>
+  <div class="sidebar-bottom"><span class="paper-badge">PAPER TRADING</span><p>Virtual hesab<br><span>Binance USDⓈ-M məlumatları</span></p><div class="sidebar-foot">Futures Lab <span>v1.1</span></div></div>
+</aside>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="breadcrumb">İş sahəsi <span>/</span> <strong>Futures terminalı</strong></div>
+    <div class="topbar-actions"><label class="auto-label"><input type="checkbox" id="auto-refresh" checked> Avtomatik yenilə</label><button class="refresh-button" id="refresh" type="button"><span aria-hidden="true">↻</span> Yenilə</button><span class="avatar" aria-label="Fuad">F</span></div>
+  </header>
+  <p class="connection-error" id="connection-error" role="status" hidden>Panel yenilənmədi. Son məlumat göstərilir; bağlantı bərpa olunanda yenidən yoxlanacaq.</p>
+  <main id="workspace" th:fragment="workspace" aria-label="Ticarət paneli">
+    <section class="page-heading" id="overview">
+      <div><div class="eyebrow">PORTFELİNƏ ÜMUMİ BAXIŞ</div><h1>Futures terminalı<span class="heading-dot">.</span></h1></div>
+      <div class="scan-status"><span class="status-pill" th:classappend="${halted or scan.errors > 0 ? 'error' : settings.enabled ? 'ready' : ''}" th:text="${halted ? 'Əməliyyatlar dayandırılıb' : !settings.enabled ? 'Skan söndürülüb' : scan.errors > 0 ? 'Məlumat xətası' : scan.running ? 'Skan edilir' : scan.finishedAt > 0 ? 'Skan tamamlandı' : 'İlk skan gözlənilir'}">İlk skan gözlənilir</span><small>Bakı vaxtı <span th:text="${@display.time(updatedAt)}">—</span></small></div>
+    </section>
+    <div class="alert error-alert" th:if="${halted}" role="alert">Jurnala yazı xətası baş verib. Hesab əməliyyatları dayandırılıb.</div>
+    <div class="alert" th:if="${scan.errors > 0}" role="status"><strong>Bazar məlumatı yenilənməyib.</strong> <span th:text="${scan.lastError}"></span></div>
+    <div class="alert" th:if="${summary.stale > 0}" role="status"><span th:text="${summary.stale}"></span> açıq mövqe üçün təzə qiymət yoxdur. Equity və açıq PnL qiymət bərpa olunanda göstəriləcək.</div>
+
+    <section class="balance-grid" aria-label="Hesab göstəriciləri">
+      <article class="stat-card featured"><div class="stat-label">Cüzdan balansı <span class="currency">USD</span></div><div class="stat-value" th:text="${@display.money(summary.wallet)}">2,000.00</div><svg class="wallet-spark" viewBox="0 0 280 55" role="img" aria-label="Son hesab hadisələrində cüzdan balansı"><polyline th:attr="points=${chart.wallet}" fill="none" stroke="currentColor" stroke-width="2"/></svg><div class="stat-foot">Sərbəst <strong th:text="${@display.money(summary.cash) + ' USD'}">—</strong></div></article>
+      <article class="stat-card"><div class="stat-label">Ümumi equity <span class="stat-icon">◈</span></div><div class="stat-value" th:text="${@display.money(summary.equity)}">—</div><div class="stat-foot">Açıq PnL <strong th:class="${@display.tone(summary.unrealized)}" th:text="${@display.signed(summary.unrealized)}">—</strong></div></article>
+      <article class="stat-card"><div class="stat-label">Realizə edilmiş PnL <span class="stat-icon">↗</span></div><div class="stat-value" th:classappend="${@display.tone(summary.realized)}" th:text="${@display.signed(summary.realized)}">0.00</div><div class="stat-foot">Komissiyalar daxil <span th:text="${@display.money(summary.fees) + ' USD fee'}"></span></div></article>
+      <article class="stat-card"><div class="stat-label">Uğurlu orderlər <span class="stat-icon">◎</span></div><div class="stat-value"><span th:text="${@display.number(summary.winRate,1)}">—</span><span class="value-unit" th:if="${summary.winRate != null}">%</span></div><div class="stat-foot"><span><b class="positive" th:text="${summary.wins}">0</b> qazanc / <b class="negative" th:text="${summary.losses}">0</b> zərər</span><span th:text="${summary.closed + ' bağlı'}">0 bağlı</span></div></article>
+    </section>
+
+    <section class="market-grid" id="market">
+      <article class="panel chart-panel">
+        <div class="panel-heading chart-heading"><div><div class="eyebrow">BAZAR QRAFİKİ</div><h2 th:text="${selected != null ? selected.report.symbol : 'Bazar gözlənilir'}">Bazar gözlənilir</h2></div><div class="chart-price" th:if="${selected != null}"><strong th:text="${@display.price(selected.report.reference)}"></strong><span class="muted">Son bağlanış · <span th:text="${selected.report.side()}"></span></span></div></div>
+        <div class="chart-toolbar"><span class="interval-pill">15m</span><span class="legend"><i></i> EMA20</span><span class="muted">Bağlanmış şamlar</span><span class="chart-time" th:if="${selected != null}" th:text="${@display.time(selected.report.candleTime)}"></span></div>
+        <div class="empty-state chart-empty" th:if="${selected == null}"><span class="empty-glyph" aria-hidden="true">⌁</span><h3>İlk bazar skanı gözlənilir</h3><p>Qiymət qrafiki və siqnallar məlumat gəldikcə görünəcək.</p><span class="subtle-tag">15m / 1h / 4h analiz</span></div>
+        <div class="chart-wrap" th:if="${selected != null}">
+          <div class="stale-label" th:if="${selected.stale()}">Köhnə məlumat · yeni şam gözlənilir</div>
+          <svg class="price-chart" viewBox="0 0 880 305" role="img" th:attr="aria-label=${selected.report.symbol + ' üçün son 60 bağlanmış 15 dəqiqəlik şam və EMA20'}">
+            <g th:each="axis : ${chart.axes}"><line x1="8" x2="770" th:attr="y1=${axis.y},y2=${axis.y}" class="grid-line"/><text x="790" th:attr="y=${axis.y + 4}" class="axis-text" th:text="${@display.price(axis.price)}"></text></g>
+            <g th:each="bar : ${chart.bars}" th:class="${bar.up ? 'candle-up' : 'candle-down'}"><line th:attr="x1=${bar.x},x2=${bar.x},y1=${bar.high},y2=${bar.low}"/><rect width="7" th:attr="x=${bar.x - 3.5},y=${bar.top},height=${bar.height}"/><rect class="volume-bar" width="7" th:attr="x=${bar.x - 3.5},y=${292 - bar.volume},height=${bar.volume}"/></g>
+            <polyline th:attr="points=${chart.ema}" class="ema-line"/>
+            <text x="12" y="303" class="axis-text">HƏCM</text>
+          </svg>
+        </div>
+        <div class="chart-bottom"><span>Binance public market data</span><span>Yalnız virtual əməliyyatlar</span></div>
+      </article>
+      <aside class="panel watchlist"><div class="panel-heading"><h2>Siqnal radarı</h2><span class="count-tag" th:text="${markets.size()}">0</span></div><div class="watchlist-labels"><span>Simvol / istiqamət</span><span>Bal</span></div>
+        <div class="market-list" th:if="${!markets.isEmpty()}"><a data-refresh th:each="market : ${markets}" th:href="@{/(asset=${market.report.symbol},order=${orderFilter},q=${query})}" class="market-row" th:classappend="${market.report.symbol == asset ? 'selected' : ''}"><div class="market-name"><strong th:text="${market.report.symbol}"></strong><span th:class="${market.stale() ? 'muted' : market.report.direction == 1 ? 'positive' : market.report.direction == -1 ? 'negative' : 'muted'}" th:text="${market.stale() ? 'Köhnə məlumat' : market.report.side()}"></span></div><div class="market-score"><strong th:classappend="${market.report.qualified() and market.report.score >= settings.threshold and !market.stale() ? 'positive' : 'muted'}" th:text="${@display.number(market.report.score,0) + '%'}"></strong><span th:text="${@display.decision(market.decision)}"></span></div></a></div>
+        <div class="empty-state compact" th:if="${markets.isEmpty()}"><p>Analiz edilən simvollar burada görünəcək.</p></div>
+        <div class="radar-footer"><span class="threshold-number" th:text="${'≥ ' + @display.number(settings.threshold,0) + '%'}">≥ 85%</span><div><strong>Minimum siqnal balı</strong><p>İndikator uyğunluğudur, uğur ehtimalı deyil.</p></div></div>
+      </aside>
+    </section>
+
+    <section class="panel orders-panel" id="orders">
+      <div class="panel-heading"><div class="heading-inline"><h2>Orderlər</h2><span class="count-tag" th:text="${summary.open + ' açıq'}">0 açıq</span></div><form class="search-form" action="/" method="get" data-refresh-form><input type="hidden" name="order" th:value="${orderFilter}"><input type="hidden" name="asset" th:value="${asset}"><label class="sr-only" for="order-search">Order simvolunu axtar</label><input id="order-search" type="search" name="q" maxlength="30" placeholder="Simvol axtar..." th:value="${query}"><button type="submit" aria-label="Axtar">⌕</button></form></div>
+      <div class="orders-toolbar"><div class="order-tabs" role="group" aria-label="Order statusu"><a data-refresh th:href="@{/(order='OPEN',q=${query},asset=${asset})}" th:classappend="${orderFilter == 'OPEN' ? 'selected' : ''}">Açıq mövqelər</a><a data-refresh th:href="@{/(order='WON',q=${query},asset=${asset})}" th:classappend="${orderFilter == 'WON' ? 'selected' : ''}">Qazanclı <span class="positive" th:text="${summary.wins}">0</span></a><a data-refresh th:href="@{/(order='LOST',q=${query},asset=${asset})}" th:classappend="${orderFilter == 'LOST' ? 'selected' : ''}">Zərərli <span class="negative" th:text="${summary.losses}">0</span></a><a data-refresh th:href="@{/(order='ALL',q=${query},asset=${asset})}" th:classappend="${orderFilter == 'ALL' ? 'selected' : ''}">Bütün orderlər</a></div><span class="muted fee-note">Açıq PnL: mark · Bağlı PnL: xalis</span></div>
+      <div class="table-scroll" th:if="${!orders.isEmpty()}"><table><thead><tr><th>Simvol / vaxt</th><th>İstiqamət</th><th>Giriş</th><th>Mark / çıxış</th><th>Miqdar</th><th>PnL (USD)</th><th>SL / TP</th><th>Siqnal balı</th><th>Status</th></tr></thead><tbody><tr th:each="row : ${orders}"><td><strong th:text="${row.symbol}"></strong><small th:text="${@display.time(row.time)}"></small></td><td><span class="side-tag" th:classappend="${row.side == 'LONG' ? 'long' : 'short'}" th:text="${row.side}"></span></td><td class="numeric" th:text="${@display.price(row.entry)}"></td><td class="numeric" th:text="${@display.price(row.price)}"></td><td class="numeric" th:text="${@display.number(row.quantity,6)}"></td><td class="numeric pnl-cell" th:classappend="${@display.tone(row.pnl)}" th:text="${@display.signed(row.pnl)}"></td><td><details th:if="${row.stop != null}" th:attr="data-detail-id=${row.id}"><summary th:text="${'TP ' + row.stage + '/3'}"></summary><div class="targets"><span>SL <b class="negative" th:text="${@display.price(row.stop)}"></b></span><span>TP1 <b th:text="${@display.price(row.tp1)}"></b></span><span>TP2 <b th:text="${@display.price(row.tp2)}"></b></span><span>TP3 <b th:text="${@display.price(row.tp3)}"></b></span></div></details><span class="muted" th:if="${row.stop == null}" th:text="${row.detail}"></span></td><td class="numeric" th:text="${@display.number(row.score,0) + '%'}"></td><td><span class="order-status" th:classappend="${row.status}" th:text="${@display.decision(row.status)}" th:title="${row.detail}"></span></td></tr></tbody></table></div>
+      <div class="empty-state orders-empty" th:if="${orders.isEmpty()}"><span class="empty-glyph" aria-hidden="true">▤</span><h3 th:text="${query.isEmpty() ? 'Bu bölmədə hələ order yoxdur' : 'Axtarışa uyğun order tapılmadı'}"></h3><p th:text="${query.isEmpty() ? 'Bal həddi və bütün keyfiyyət filtrləri keçildikdə virtual order avtomatik açılır.' : 'Simvol adını dəyişərək yenidən axtar.'}"></p></div>
+      <div class="panel-foot"><span>Son 500 bağlı order · tam tarixçə jurnalda qorunur</span><span>Margin <strong th:text="${@display.money(summary.margin) + ' USD'}"></strong></span></div>
+    </section>
+
+    <section class="panel analysis-panel" id="analysis">
+      <div class="panel-heading"><div class="heading-inline"><h2>Detallı siqnal analizi</h2><span class="subtle-tag" th:text="${selected != null ? selected.report.symbol : '15m · 1h · 4h'}"></span></div><span class="muted">Bal + məcburi filtrlər</span></div>
+      <div class="empty-state compact" th:if="${selected == null}"><p>Radardakı simvolu seçdikdə indikatorlar və giriş qərarının səbəbi burada açılır.</p></div>
+      <div class="analysis-content" th:if="${selected != null}">
+        <div class="analysis-overview"><div class="score-display"><strong th:text="${@display.number(selected.report.score,0)}"></strong><span>/ 100 bal</span><meter min="0" max="100" low="70" th:attr="high=${settings.threshold},optimum=100,value=${selected.report.score}" aria-label="Siqnal uyğunluq balı"></meter></div><div class="decision-copy"><span class="decision-label" th:classappend="${selected.decision == 'OPENED' ? 'positive' : 'warning'}" th:text="${selected.stale() ? 'Siqnal köhnəlib' : @display.decision(selected.decision)}"></span><p th:text="${selected.detail}"></p><small>Analiz vaxtı: <span th:text="${@display.time(selected.checkedAt)}"></span></small></div><div class="risk-plan"><span>ATR14 <strong th:text="${@display.price(selected.report.atr)}"></strong></span><span>Stop məsafəsi <strong th:text="${@display.price(selected.report.stopDistance)}"></strong></span><span>TP1 / TP2 / TP3 <strong>1R / 2R / 3R</strong></span><span>İstiqamət <strong th:text="${selected.report.side()}"></strong></span></div></div>
+        <div class="checks-grid"><article class="check" th:each="check : ${selected.report.checks}"><span class="check-result" th:classappend="${check.passed ? 'passed' : 'failed'}" th:text="${check.passed ? '✓' : '×'}" th:attr="aria-label=${check.passed ? 'Keçdi' : 'Keçmədi'}"></span><div><strong th:text="${check.label}"></strong><p th:text="${check.detail}"></p></div><span class="check-points" th:text="${check.mandatory ? 'MƏCBURİ' : '+' + check.points + '/' + check.maximum}"></span></article></div>
+        <details class="indicator-details" data-detail-id="indicators"><summary>Bütün indikator dəyərləri <span>15m / 1h / 4h</span></summary><div class="table-scroll"><table class="indicator-table"><thead><tr><th>İndikator</th><th>15m</th><th>1h</th><th>4h</th></tr></thead><tbody><tr th:each="key : ${ {'close','ema20','ema50','ema200','rsi14','atr14','atrPct','adx14','plusDI','minusDI','macdHistogram','rollingVwap20','relativeVolume','obvChange20','support20','resistance20','stochasticK','bollingerUpper','bollingerLower','bollingerWidthPct','ema50SlopeAtr','emaDistanceAtr'} }"><td th:text="${key}"></td><td class="numeric" th:text="${@display.price(selected.report.indicators['15m.' + key])}"></td><td class="numeric" th:text="${@display.price(selected.report.indicators['1h.' + key])}"></td><td class="numeric" th:text="${@display.price(selected.report.indicators['4h.' + key])}"></td></tr></tbody></table></div></details>
+      </div>
+    </section>
+
+    <section class="bottom-grid">
+      <article class="panel" id="activity"><div class="panel-heading"><h2>Əməliyyat jurnalı</h2><span class="muted">Son 30 hadisə</span></div><div class="activity-list"><div class="activity-row" th:each="item : ${activity}"><span class="event-type" th:text="${item.type}"></span><p th:text="${item.detail}"></p><time th:text="${@display.time(item.time)}"></time></div></div></article>
+      <article class="panel rules-panel"><div class="panel-heading"><h2>Əməliyyat qaydaları</h2><span class="subtle-tag">Avtomatik</span></div><dl><div><dt>Minimum bal</dt><dd class="accent" th:text="${@display.number(settings.threshold,0) + ' / 100'}"></dd></div><div><dt>Maksimum mövqe</dt><dd th:text="${settings.maxPositions}"></dd></div><div><dt>Order üçün ayırma</dt><dd th:text="${@display.number(settings.allocation * 100,0) + '% equity'}"></dd></div><div><dt>Leverage</dt><dd th:text="${settings.leverage + '×'}"></dd></div><div><dt>İcazəli spread</dt><dd th:text="${'≤ ' + @display.number(settings.maxSpreadBps,0) + ' bps'}"></dd></div><div><dt>Komissiya / tərəf</dt><dd th:text="${@display.number(settings.feeRate * 100,3) + '%'}"></dd></div></dl><div class="scan-counters"><span><b th:text="${scan.checked}">0</b> analiz</span><span><b th:text="${scan.signals}">0</b> siqnal</span><span><b th:text="${scan.errors}">0</b> xəta</span></div></article>
+    </section>
+    <footer class="page-footer"><span>FUTURES LAB <span class="muted">/ Virtual ticarət terminalı</span></span><span>5 saniyəlik panel yeniləməsi · Bakı UTC+4</span></footer>
+  </main>
+</div>
+</body>
+</html>

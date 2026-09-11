@@ -21,8 +21,24 @@ class AnalysisTest {
         assertTrue(up.get("ema20")>up.get("ema50")); assertTrue(down.get("ema20")<down.get("ema50"));
     }
     @Test void scoreBoundedAndOpposingHigherTimeframeRejected() {
-        var a=new Analysis(); var s=a.analyze("UP",series(.2),series(.2),series(.2));
-        assertNotNull(s); assertTrue(s.score()>=0 && s.score()<=100); assertEquals(1,s.direction());
+        var a=new Analysis(); var s=a.evaluate("UP",series(.2),series(.2),series(.2));
+        assertTrue(s.score()>=0 && s.score()<=100); assertEquals(1,s.direction());
+        assertEquals(100,s.checks().stream().mapToInt(Check::maximum).sum());
+        assertNull(s.signal(),"RSI=100 must now fail the exhaustion gate even in a strong trend");
+        assertTrue(s.checks().stream().anyMatch(c->c.mandatory() && !c.passed()));
         assertNull(a.analyze("MIX",series(.2),series(.2),series(-.2)));
+    }
+    @Test void malformedCandlesAndNonFiniteValuesAreRejected() {
+        var candles=series(.1);
+        candles.set(299,new Candle(0,100,101,99,Double.NaN,100,1));
+        assertThrows(IllegalArgumentException.class,()->Analysis.indicators(candles));
+        assertThrows(IllegalArgumentException.class,()->Analysis.ema(new double[0],20));
+    }
+    @Test void rejectedMarketsStillExposeDetailedDiagnostics() {
+        var report=new Analysis().evaluate("FLAT",series(0),series(0),series(0));
+        assertFalse(report.qualified()); assertEquals("NEUTRAL",report.side());
+        assertTrue(report.indicators().containsKey("4h.ema50SlopeAtr"));
+        assertTrue(report.indicators().containsKey("15m.bollingerWidthPct"));
+        assertTrue(report.checks().size()>15);
     }
 }

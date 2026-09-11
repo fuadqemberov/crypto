@@ -1,16 +1,38 @@
-# Binance Futures Lab — Java 17 / Spring Boot
+# Futures Lab — Java 17 / Spring Boot / Thymeleaf
 
-Desktopdakı `Cryprto` qovluğunda işləyən konsol tətbiqi. Binance public REST API-dən canlı məlumat alır, LONG/SHORT siqnalları çıxarır və $2,000 virtual hesabda orderləri idarə edir. API açarı tələb etmir; real Binance hesabında order açmaq funksiyası yoxdur.
+Binance üslubunda qaranlıq mövzulu, Azərbaycan dilində ticarət terminalı. Binance public REST API-dən canlı məlumat alır, LONG/SHORT siqnalları çıxarır və $2,000 virtual hesabda orderləri idarə edir. Spring MVC + Thymeleaf paneli mövcud virtual hesaba və dəyişməz order jurnalına bağlıdır. API açarı tələb etmir; real Binance hesabında order açmaq funksiyası yoxdur.
 
 ## Başlatma
 
-`run.cmd` faylını iki dəfə klikləyin. Dayandırmaq: Ctrl+C. Hazır JAR alternativi:
+Kod yenilənəndən sonra əvvəl `build.cmd`, sonra `run.cmd` işlədin. Brauzerdə **http://localhost:8080** açın. Dayandırmaq: Ctrl+C. Hazır JAR alternativi:
 
 ```powershell
 java -jar target/futures-lab-1.0.0.jar
 ```
 
 Kod dəyişəndə `build.cmd` işlədin. Java 17+ lazımdır. Lokal Maven `.tools` daxilindədir; ilk build internet tələb edir.
+
+Linux/macOS və ya PATH-də Maven olduqda:
+
+```bash
+mvn clean verify
+java -jar target/futures-lab-1.0.0.jar
+# Skan etmədən mövcud hesabı və tarixçəni göstərmək
+java -jar target/futures-lab-1.0.0.jar --bot.enabled=false
+```
+
+Panel standart olaraq yalnız `127.0.0.1:8080` ünvanına bağlanır. Başqa port üçün `--server.port=8081` istifadə edin. Şəbəkəyə açmaq lazım gəlsə, autentifikasiyalı reverse proxy arxasında yerləşdirin. Frontend üçün Node, npm və CDN tələb olunmur.
+
+## Panel
+
+- Cüzdan balansı = cash + ayrılmış margin; equity = cüzdan balansı + mark qiyməti üzrə açıq PnL. Təzə qiyməti olmayan açıq mövqe varsa equity/PnL sıfır kimi göstərilmir: `—` və xəbərdarlıq görünür.
+- Realizə edilmiş PnL giriş, hissəli çıxış və yekun çıxış komissiyalarını ehtiva edir. Açıq PnL mark qiymətindən hesablanan, hələ realizə edilməyən məbləğdir; gələcək çıxış komissiyası daxil deyil.
+- Açıq, qazanclı, zərərli və bütün orderlər üzrə filtr; simvol axtarışı; giriş/mark/çıxış, miqdar, siqnal balı, SL və TP mərhələləri.
+- **Yaşıl:** yekun xalis PnL > 0. **Qırmızı:** yekun xalis PnL < 0. **Neytral:** başabaş. Status həm mətnlə, həm rənglə göstərilir. TP1/TP2 hissəli çıxışı tamamlanmış order sayılmır; stop ilə bağlanan, amma yekun xalis nəticəsi müsbət olan order qazanclıdır.
+- Son 60 bağlanmış 15m şamı, EMA20 və həcm qrafiki. Simvol radarı; hər simvol üçün bal bölgüsü, məcburi filtrlər və 15m/1h/4h indikator cədvəli. Aşağı ballı/rədd edilmiş analizlər də qərarın səbəbi ilə görünür.
+- Panel hər 5 saniyədə Thymeleaf fraqmenti ilə yenilənir; axtarış, seçilmiş simvol, order filtri, açıq SL/TP detalları və siyahı mövqeyi qorunur. Avtomatik yenilənməni söndürmək mümkündür. JavaScript olmadan server səhifəsi və GET filtrləri işləyir.
+- `GET /` tam səhifə, `GET /dashboard/content` yenilənən fraqmentdir. Səhifəni yeniləmək Binance sorğusu və ya order yaratmır. Hazır analiz cache-i oxunur.
+- Son 500 tamamlanmış order, 500 hesab hadisəsinin balans qrafiki və 30 jurnal hadisəsi paneldə görünür; ümumi qazanc/zərər sayları bütün jurnaldan hesablanır. Tarixçənin özü kəsilmir. Radarda maksimum 500 son simvol analizi saxlanılır.
 
 ```powershell
 # Yalnız BTC və ETH ilə işlətmək
@@ -23,11 +45,30 @@ java -jar target/futures-lab-1.0.0.jar --bot.data-dir=./other-account
 
 Aktiv USDT/USDC ilə kotirovka olunan USD-M perpetual müqavilələr avtomatik kəşf edilir. COIN-M, spot və müddətli futures daxil deyil. USDT/USDC virtual hesabda 1 USD sayılır. Standart olaraq 24 saatlıq dövriyyəsi 10 milyonun altında olanlar filtr edilir; `--bot.min-quote-volume=0` filtri söndürür. Yeni listinqdə ən azı 250 bağlanmış şam olmayanda analiz buraxılır.
 
-15m / 1h / 4h üçün EMA20/50/200, Wilder RSI14, ATR14, ADX/DI, MACD histogram, Bollinger zolaqları, stochastic K, 20 şamlıq rolling VWAP, relative volume, OBV, support/resistance hesablanır. Engulfing, pin bar, impulse, breakout və EMA pullback yoxlanır. Bollinger və stochastic diaqnostik detallardır, bala ayrıca əlavə olunmur.
+15m / 1h / 4h üçün EMA20/50/200, Wilder RSI14, ATR14, ADX/DI, MACD histogram, Bollinger zolaqları, stochastic K, 20 şamlıq rolling VWAP, relative volume, OBV, support/resistance hesablanır. Engulfing, pin bar, impulse, breakout və EMA pullback yoxlanır. Stochastic diaqnostik göstəricidir; Bollinger eni bal bölgüsünə daxildir.
 
-Bal bölgüsü: 3 timeframe trendi 45; ADX/DI 10; MACD 10; RSI 5; VWAP 5; həcm/OBV 10; şam 10; struktur 5. 1h və 4h trend uyğunluğu və ATR volatilite diapazonu məcburidir. Konsola yalnız minimum 90/100 siqnallar və onların bütün indikator dəyərləri yazılır; texniki status/xəta mesajları da görünür.
+Bal bölgüsü:
 
-**90/100 indikator uyğunluq balıdır, 90% uğur ehtimalı deyil.** Backtest və out-of-sample kalibrasiya aparılmayıb. Bu qayda sistemi 20 illik treyderin bütün bacarıqlarını, xəbər/fundamental/on-chain analizi və zəmanətli gəliri əvəz etmir. Qaydalar korrelyasiyalıdır; yüksək balın proqnoz gücü hələ ölçülməyib. Siqnalsız uzun müddət normaldır.
+| Kriteriya | Maksimum bal |
+| --- | ---: |
+| 15m / 1h / 4h EMA trend uyğunluğu | 30 (10 + 10 + 10) |
+| ADX ≥ 25 və istiqamətli DI | 10 |
+| 15m / 1h MACD momentum | 10 |
+| 15m RSI momentum | 5 |
+| Rolling VWAP | 5 |
+| Relative volume ≥ 1.2 və OBV | 10 |
+| Engulfing / pin bar / impuls | 10 |
+| Breakout / EMA20 pullback | 5 |
+| 15m və 1h EMA50 meyli | 5 |
+| Bollinger eni 0.4–15% | 5 |
+| 1h RSI momentum | 5 |
+| **Cəmi** | **100** |
+
+**Məcburi filtrlər baldan asılı deyil:** 1h/4h trend uyğunluğu, əks 15m trendinin olmaması, ATR/qiymət 0.1–5%, LONG RSI ≤ 78 / SHORT RSI ≥ 22, qiymətin EMA20-dən maksimum 3 ATR uzaqlığı və sonlu/etibarlı indikatorlar. Hər filtr paneldə ayrıca izah edilir. Girişdə TP2 üçün spread, slippage və komissiya nəzərə alınmaqla konservativ risk/gəlir nisbəti ən azı 1.5 olmalıdır.
+
+**Yalnız 85/100 və yuxarı** siqnallar order mərhələsinə keçir. Hədd konfiqurasiyada, `Scanner` və birbaşa `PaperBroker.tryOpen` daxilində tətbiq edilir; 85-dən aşağı konfigurasiya qəbul edilmir. `NaN`, sonsuz və 100-dən böyük bal rədd olunur. `--bot.threshold=90` ilə həddi yüksəltmək mümkündür. Minimum balı keçmək orderə zəmanət vermir: hesab limiti, təzə qiymət, təkrar şam, spread, funding və ölçü filtrləri də keçilməlidir.
+
+**85/100 indikator uyğunluq balıdır, 85% uğur ehtimalı deyil.** Backtest və out-of-sample kalibrasiya aparılmayıb. Qaydalar korrelyasiyalıdır; əlavə filtrlərin proqnoz gücü və gəlirliliyə təsiri hələ ölçülməyib. Xəbər/fundamental/on-chain analizi yoxdur. Siqnalsız uzun müddət normaldır. Paneldəki uğur faizi yalnız tamamlanmış virtual orderlərin faktiki nəticəsidir; siqnal balı ilə eyni anlayış deyil.
 
 ## Virtual hesab və orderlər
 
@@ -54,4 +95,8 @@ REST sorğuları minimum 350 ms aralı göndərilir. HTTP timeout 15 saniyədir;
 
 `build.cmd` indikator, hesablaşma, LONG/SHORT, TP/SL, təzə məlumat, təkrar giriş, disk bərpası və korlanma testlərini çalışdırır. Bu testlər strategiyanın gəlirliliyini sübut etmir.
 
-Rəsmi sənədlər: [Binance USD-M market data](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data), [Spring Boot](https://docs.spring.io/spring-boot/).
+Əlavə yoxlamalar: 84.999 rəddi / 85 qəbulu, etibarsız bal və qiymətlər, komissiyadan sonra risk/gəlir, bağlanmış orderlərin restartdan sonra bərpası, Thymeleaf renderi, balanslar, qrafik, rəngli statuslar, axtarış escaping-i və panel GET sorğularının heç bir order/Binance sorğusu yaratmaması. HTTP renderi MockMvc ilə yoxlanılır; tarixi gəlirlilik backtest-i deyil.
+
+Arxitektura və dəyişiklik qeydləri: [Layihə analizi](docs/ANALYSIS.az.md).
+
+Rəsmi sənədlər: [Binance USD-M market data](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data), [Spring Boot 3.5 servlet web](https://docs.spring.io/spring-boot/3.5/reference/web/servlet.html), [Thymeleaf + Spring](https://www.thymeleaf.org/doc/tutorials/3.1/thymeleafspring.html).

@@ -63,7 +63,8 @@ public class BinanceClient {
         List<Candle> result=new ArrayList<>();
         for(var n:rows) if(n.get(6).asLong()<now-2000) {
             Candle c=new Candle(n.get(0).asLong(),n.get(1).asDouble(),n.get(2).asDouble(),n.get(3).asDouble(),n.get(4).asDouble(),n.get(5).asDouble(),n.get(6).asLong());
-            if(c.close()<=0 || c.low()<=0 || c.high()<Math.max(c.open(),c.close()) || c.low()>Math.min(c.open(),c.close()) || c.volume()<0)
+            if(java.util.stream.DoubleStream.of(c.open(),c.high(),c.low(),c.close(),c.volume()).anyMatch(v->!Double.isFinite(v))
+                    || c.open()<=0 || c.close()<=0 || c.low()<=0 || c.high()<Math.max(c.open(),c.close()) || c.low()>Math.min(c.open(),c.close()) || c.volume()<0)
                 throw new IllegalStateException("Invalid candle "+symbol);
             result.add(c);
         }
