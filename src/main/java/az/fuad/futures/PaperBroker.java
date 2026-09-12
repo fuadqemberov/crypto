@@ -70,7 +70,7 @@ public class PaperBroker {
         if(System.currentTimeMillis()-signal.candleTime()>930000 || signal.candleTime()>System.currentTimeMillis()) return rejected("Siqnal şamının vaxtı etibarsızdır");
         if(!contract.symbol().equals(signal.symbol())) return rejected("Siqnal və müqavilə uyğun deyil");
         if(Math.abs(quote.mark()-signal.reference())>signal.atr()) return rejected("Qiymət siqnaldan 1 ATR-dən çox uzaqlaşıb");
-        if(Math.abs(quote.funding())>.001) return rejected("Funding mütləq 0.1% limitini keçir");
+        if(!Analysis.fundingAllowed(signal.direction(),quote.funding())) return rejected("Funding istiqamət üzrə 0.03% və ya mütləq 0.1% limitini keçir");
         if(account.positions.size()>=settings.maxPositions()) return rejected("Açıq mövqe limiti doludur");
         if(account.positions.stream().anyMatch(p->p.symbol.equals(signal.symbol()))) return rejected("Bu simvol üzrə artıq açıq mövqe var");
         if(account.lastSignals.getOrDefault(signal.symbol(),0L)>=signal.candleTime()) return rejected("Bu şam üzrə order artıq açılıb");
@@ -80,12 +80,12 @@ public class PaperBroker {
         double cost=entry*(2*settings.feeRate()+2*settings.slippageBps()/10000+quote.spreadBps()/10000);
         if((2*signal.stopDistance()-cost)/(signal.stopDistance()+cost)<1.5) return rejected("Xərclərdən sonra TP2 risk/gəlir nisbəti 1.5-dən aşağıdır");
         double budget=equity*settings.allocation();
-        // Entry fees are included inside the 7% cash allocation.
-        double notional=Math.min(budget,account.cash)/(1.0/settings.leverage()+settings.feeRate());
+        // Allocate the configured share to margin; entry commission is paid separately.
+        double notional=budget*settings.leverage();
         double qty=BigDecimal.valueOf(notional/entry).divide(BigDecimal.valueOf(contract.step()),0,RoundingMode.DOWN).multiply(BigDecimal.valueOf(contract.step())).doubleValue();
         if(qty<contract.minQty() || qty*entry<contract.minNotional() || qty<=0 || signal.stopDistance()>=entry*.2) return rejected("Order ölçüsü və ya stop məsafəsi limitə uyğun deyil");
         double fee=qty*entry*settings.feeRate(),margin=qty*entry/settings.leverage();
-        if(margin+fee>account.cash || margin+fee>budget+1e-8) return rejected("Sərbəst balans kifayət deyil");
+        if(margin+fee>account.cash || margin>budget+1e-8) return rejected("Sərbəst balans kifayət deyil");
         Account next=journal.copy(account); Position p=new Position();
         p.id=UUID.randomUUID().toString(); p.symbol=signal.symbol(); p.direction=d; p.openedAt=System.currentTimeMillis();
         p.entry=entry; p.quantity=qty; p.initialQuantity=qty; p.margin=margin; p.risk=signal.stopDistance();

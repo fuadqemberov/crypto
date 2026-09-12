@@ -41,12 +41,19 @@ public class Scanner {
                     String decision=report.qualified()?"LOW_SCORE":"BLOCKED";
                     String detail=report.qualified()?"Bal minimum "+settings.threshold()+" həddinə çatmayıb":"Məcburi keyfiyyət filtri keçilməyib";
                     if(signal!=null && signal.score()>=Math.max(85,settings.threshold())) {
+                        var entryQuote=client.quote(symbol);
+                        report=analysis.withFunding(report,entryQuote);
+                        signal=report.signal();
+                        if(signal==null) {
+                            dashboard.record(report,fast,"BLOCKED","Funding filtri keçilməyib");
+                            continue;
+                        }
                         signals++;
                         broker.recordSignal(signal);
                         log.info("SIGNAL {} {} score={}/100 (NOT win probability) candle={} reference={} ATR={} SL-distance={}\nChecks: {}\nIndicators: {}",
                                 symbol,signal.direction()==1?"LONG":"SHORT",signal.score(),time,signal.reference(),signal.atr(),signal.stopDistance(),signal.reasons(),signal.indicators());
                         try {
-                            var result=broker.tryOpen(signal,contract,client.quote(symbol));
+                            var result=broker.tryOpen(signal,contract,entryQuote);
                             decision=result.opened()?"OPENED":"EXECUTION_REJECTED"; detail=result.reason();
                             if(!result.opened()) log.info("SIGNAL {} entry skipped: {}",symbol,result.reason());
                         } catch(Exception e) {

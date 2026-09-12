@@ -18,12 +18,27 @@ class PaperBrokerTest {
         try(varBroker b=new varBroker(settings())) {
             assertTrue(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
             Account a=b.bot.snapshot(); cash=a.cash;
-            assertTrue(2000-cash<=140.00000001); assertEquals(1,a.positions.size());
+            assertTrue(a.positions.get(0).margin<=140.00000001); assertTrue(a.positions.get(0).margin>139.9); assertEquals(1,a.positions.size());
             assertEquals(2000,a.cash+a.positions.get(0).margin+a.fees,1e-9);
             assertFalse(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
         }
         try(varBroker b=new varBroker(settings())) { assertEquals(cash,b.bot.snapshot().cash); assertEquals(1,b.bot.snapshot().positions.size()); }
         assertTrue(Files.readString(dir.resolve("order_history.txt")).contains("OPEN"));
+    }
+    @Test void threeTimesLeverageAllocatesSevenPercentMarginAndPersistsIt() throws Exception {
+        Settings s=new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,3,5,85,0,15,.0005,3,.15,350,"");
+        double margin;
+        try(varBroker b=new varBroker(s)) {
+            assertTrue(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
+            var p=b.bot.snapshot().positions.get(0); margin=p.margin;
+            assertEquals(140,margin,.04);
+            assertEquals(margin*3,p.entry*p.quantity,1e-9);
+            assertEquals(2000-margin-p.entry*p.quantity*.0005,b.bot.snapshot().cash,1e-9);
+            b.bot.mark("BTCUSDT",quote(105));
+            b.bot.mark("BTCUSDT",quote(113));
+            assertEquals(margin,b.bot.view().trades().get(0).initialMargin(),1e-9);
+        }
+        try(varBroker b=new varBroker(s)) { assertEquals(margin,b.bot.view().trades().get(0).initialMargin(),1e-9); }
     }
     @Test void takeProfitsAndAccounting() throws Exception {
         try(varBroker b=new varBroker(settings())) {

@@ -15,7 +15,7 @@ public class DashboardController {
                           Double winRate, Double profitFactor, int stale, int open) {}
     public record OrderRow(String id, String symbol, String side, double score, double entry, Double price,
                            double quantity, Double pnl, String status, long time, String detail,
-                           Double stop, Double tp1, Double tp2, Double tp3, int stage) {}
+                           Double stop, Double tp1, Double tp2, Double tp3, int stage, double invested, double notional, Double roi) {}
     private final PaperBroker broker;
     private final DashboardState state;
     private final Settings settings;
@@ -45,12 +45,15 @@ public class DashboardController {
             Double price=fresh?quote.mark():null;
             Double pnl=fresh?p.direction*(price-p.entry)*p.quantity:null;
             margin+=p.margin; if(fresh) unrealized+=pnl; else stale++;
+            double invested=p.quantity>0?p.margin*p.initialQuantity/p.quantity:0;
+            double exit=fresh?(p.direction==1?quote.bid():quote.ask())*(1-p.direction*settings.slippageBps()/10000):0;
+            Double net=fresh?p.realized+p.direction*(exit-p.entry)*p.quantity-exit*p.quantity*settings.feeRate():null;
             rows.add(new OrderRow(p.id,p.symbol,p.direction==1?"LONG":"SHORT",p.signal==null?0:p.signal.score(),
-                    p.entry,price,p.quantity,pnl,"OPEN",p.openedAt,fresh?"Mark qiyməti üzrə açıq PnL":"Təzə qiymət gözlənilir",
-                    p.stop,p.tp1,p.tp2,p.tp3,p.stage));
+                    p.entry,price,p.quantity,net,"OPEN",p.openedAt,fresh?"İndi bağlansa təxmini xalis nəticə; hissəli çıxışlar və komissiyalar daxil":"Təzə qiymət gözlənilir",
+                    p.stop,p.tp1,p.tp2,p.tp3,p.stage,invested,p.entry*p.initialQuantity,net!=null && invested>0?net/invested*100:null));
         }
         for(ClosedTrade trade:view.trades()) rows.add(new OrderRow(trade.id(),trade.symbol(),trade.side(),trade.score(),
-                trade.entry(),trade.exit(),trade.quantity(),trade.netPnl(),trade.outcome(),trade.closedAt(),trade.reason(),null,null,null,null,3));
+                trade.entry(),trade.exit(),trade.quantity(),trade.netPnl(),trade.outcome(),trade.closedAt(),trade.reason(),null,null,null,null,3,trade.initialMargin(),trade.entry()*trade.quantity(),trade.initialMargin()>0?trade.netPnl()/trade.initialMargin()*100:null));
         rows.sort(Comparator.comparingLong(OrderRow::time).reversed());
         List<OrderRow> visible=rows.stream().filter(r->filter.equals("ALL") || r.status().equals(filter))
                 .filter(r->r.symbol().contains(search)).toList();

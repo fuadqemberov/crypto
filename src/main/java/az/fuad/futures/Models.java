@@ -26,7 +26,7 @@ public final class Models {
     }
     public record OpenDecision(boolean opened, String reason) {}
     public record ClosedTrade(String id, String symbol, int direction, long openedAt, long closedAt,
-                              double entry, Double exit, double quantity, double netPnl, double score, String reason) {
+                              double entry, Double exit, double quantity, double netPnl, double score, String reason, double initialMargin) {
         public String outcome() { return netPnl > 0 ? "WON" : netPnl < 0 ? "LOST" : "FLAT"; }
         public String side() { return direction == 1 ? "LONG" : "SHORT"; }
     }

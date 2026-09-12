@@ -11,9 +11,31 @@ class AnalysisTest {
         for(int i=0;i<300;i++) { double p=100+i*step; c.add(new Candle(i*900000L,p,p+1,p-1,p,100,(i+1)*900000L-1)); }
         return c;
     }
+    @Test void fundingIsDirectionalAndNeverAddsProbabilityPoints() {
+        assertFalse(Analysis.fundingAllowed(1,.0004));
+        assertTrue(Analysis.fundingAllowed(-1,.0004));
+        assertFalse(Analysis.fundingAllowed(-1,-.0004));
+        assertTrue(Analysis.fundingAllowed(1,-.0004));
+        assertFalse(Analysis.fundingAllowed(1,-.002));
+        assertFalse(Analysis.fundingAllowed(1,Double.NaN));
+        long now=System.currentTimeMillis();
+        var signal=new Signal("BTCUSDT",1,90,now,100,2,4,Map.of(),List.of());
+        var report=new Report("BTCUSDT",1,90,now,100,2,4,Map.of(),List.of(),signal);
+        var result=new Analysis().withFunding(report,new Quote(100,99.99,100.01,now,.0004));
+        assertNull(result.signal()); assertEquals(90,result.score());
+        assertTrue(result.checks().get(0).mandatory());
+    }
     @Test void flatMarketIsNeutralAndFinite() {
         var m=Analysis.indicators(series(0)); assertEquals(50,m.get("rsi14")); assertEquals(0,m.get("adx14")); assertEquals(2,m.get("atr14"),1e-8);
         assertTrue(m.values().stream().allMatch(Double::isFinite)); assertNull(new Analysis().analyze("FLAT",series(0),series(0),series(0)));
+    }
+    @Test void weakVolumeAndMissingCandleStructureCannotBeCompensatedByScore() {
+        var report=new Analysis().evaluate("UP",series(.2),series(.2),series(.2));
+        for(String label:List.of("Həcm təsdiqi","Giriş strukturu")) {
+            var check=report.checks().stream().filter(c->c.label().equals(label)).findFirst().orElseThrow();
+            assertTrue(check.mandatory()); assertFalse(check.passed());
+        }
+        assertNull(report.signal());
     }
     @Test void directionalIndicatorsTrackKnownSeries() {
         var up=Analysis.indicators(series(.2)); var down=Analysis.indicators(series(-.2));

@@ -59,7 +59,7 @@ class DashboardTest {
         assertTrue(broker.open(new Signal("BTCUSDT",1,85,now-10000,100,2,4,Map.of(),List.of()),contract,quote));
         long sequence=broker.snapshot().sequence;
         String open=mvc.perform(get("/dashboard/content").param("asset","BTCUSDT")).andExpect(status().isOk()).andReturn().getResponse().getContentAsString();
-        assertTrue(open.contains("price-chart")); assertTrue(open.contains("LONG")); assertTrue(open.contains("order-status OPEN"));
+        assertTrue(open.contains("Yatırılan marja / mövqe")); assertTrue(open.contains("təxmini xalis")); assertTrue(open.contains("USD mövqe")); assertTrue(open.contains("price-chart")); assertTrue(open.contains("LONG")); assertTrue(open.contains("order-status OPEN"));
         assertTrue(open.contains("15m.ema") || open.contains("ema50SlopeAtr"));
         assertFalse(open.contains("<html")); assertEquals(sequence,broker.snapshot().sequence);
         broker.mark("BTCUSDT",new Quote(113,112.99,113.01,System.currentTimeMillis(),0));

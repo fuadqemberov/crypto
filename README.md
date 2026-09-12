@@ -64,7 +64,7 @@ Bal bölgüsü:
 | 1h RSI momentum | 5 |
 | **Cəmi** | **100** |
 
-**Məcburi filtrlər baldan asılı deyil:** 1h/4h trend uyğunluğu, əks 15m trendinin olmaması, ATR/qiymət 0.1–5%, LONG RSI ≤ 78 / SHORT RSI ≥ 22, qiymətin EMA20-dən maksimum 3 ATR uzaqlığı və sonlu/etibarlı indikatorlar. Hər filtr paneldə ayrıca izah edilir. Girişdə TP2 üçün spread, slippage və komissiya nəzərə alınmaqla konservativ risk/gəlir nisbəti ən azı 1.5 olmalıdır.
+**Məcburi filtrlər baldan asılı deyil:** 1h/4h trend uyğunluğu, əks 15m trendinin olmaması, ATR/qiymət 0.1–5%, LONG RSI ≤ 78 / SHORT RSI ≥ 22, qiymətin EMA20-dən maksimum 2 ATR uzaqlığı və sonlu/etibarlı indikatorlar. Hər filtr paneldə ayrıca izah edilir. Girişdə TP2 üçün spread, slippage və komissiya nəzərə alınmaqla konservativ risk/gəlir nisbəti ən azı 1.5 olmalıdır.
 
 **Yalnız 85/100 və yuxarı** siqnallar order mərhələsinə keçir. Hədd konfiqurasiyada, `Scanner` və birbaşa `PaperBroker.tryOpen` daxilində tətbiq edilir; 85-dən aşağı konfigurasiya qəbul edilmir. `NaN`, sonsuz və 100-dən böyük bal rədd olunur. `--bot.threshold=90` ilə həddi yüksəltmək mümkündür. Minimum balı keçmək orderə zəmanət vermir: hesab limiti, təzə qiymət, təkrar şam, spread, funding və ölçü filtrləri də keçilməlidir.
 
@@ -72,13 +72,13 @@ Bal bölgüsü:
 
 ## Virtual hesab və orderlər
 
-- İlkin cash: $2,000. Hər girişin margin + giriş komissiyası cari equity-nin maksimum 7%-i, ilk order üçün maksimum $140.
-- Eyni anda maksimum 5 mövqe, hər simvola 1 mövqe. Standart leverage 1x; konfiqurasiya 1–3x qəbul edir. Mövcud açıq mövqelər üçün təzə mark qiyməti yoxdursa yeni order buraxılır.
+- İlkin cash: $2,000. Hər girişin marjası cari equity-nin 7%-idir (lot addımına görə aşağı yuvarlaqlaşdırılır); komissiya ayrıca ödənir. Standart 3× leverage ilə ilk order təxminən $140 marja, $420 mövqe və $0.21 giriş komissiyasıdır. Kifayət qədər cash yoxdursa, kiçik order əvəzinə giriş rədd edilir. 1× leverage ilə qiymətin 1% dəyişməsi $140 mövqedə təxminən $1.40 brutto nəticədir.
+- Eyni anda maksimum 5 mövqe, hər simvola 1 mövqe. Standart leverage 3x; konfiqurasiya 1–3x qəbul edir. Mövcud açıq mövqelər üçün təzə mark qiyməti yoxdursa yeni order buraxılır.
 - Miqdar LOT_SIZE addımına aşağı yuvarlaqlaşdırılır, minimum miqdar və notional yoxlanır. Balans çatmırsa ölçü azalır və ya order açılmır.
 - Başlanğıc SL: girişdən 2×ATR. TP1/TP2/TP3: 1R/2R/3R; hərəsində ilkin miqdarın təxminən üçdə biri bağlanır. TP1-dən sonra SL girişə, TP2-dən sonra +1R-ə keçir.
 - Mark qiyməti SL məsafəsinin son 15%-nə girəndə `SL_PROXIMITY` ilə avtomatik çıxış. SL keçilibsə `STOP_LOSS`. TP-lər icra oluna bilən bid/ask qiyməti ilə yoxlanır.
 - Giriş/çıxış komissiyası 0.05%, hər tərəf üçün 3 bps slippage. Spread >15 bps, funding göstəricisi mütləq 0.1%-dən böyük və ya qiymət siqnal qiymətindən 1 ATR uzaqdırsa giriş yoxdur.
-- Real order book dərinliyi, funding ödənişləri, liquidation/ADL və exchange fill modeli daxil deyil. Hissəli virtual çıxışların miqdarı exchange lot qaydasına yenidən yuvarlaqlaşdırılmır. 1x standartını saxlamaq daha sadə simulyasiya verir.
+- Real order book dərinliyi, funding ödənişləri, liquidation/ADL və exchange fill modeli daxil deyil. Hissəli virtual çıxışların miqdarı exchange lot qaydasına yenidən yuvarlaqlaşdırılmır.
 - Hər 5 saniyədən sonra monitor dövrü başlayır; API sorğularının müddəti intervala əlavə olunur. Tətbiq bağlı/internet kəsilmiş halda SL/TP işləmir. Açıldıqda mövcud mövqelər ilk təzə qiymətdə idarə edilir; offline dövrdə toxunulmuş TP/SL-lər bərpa edilmir. Gap zamanı çıxış cari bid/ask qiymətindədir, SL qiymətinə zəmanət yoxdur.
 
 ## Davamlı yaddaş
@@ -100,3 +100,7 @@ REST sorğuları minimum 350 ms aralı göndərilir. HTTP timeout 15 saniyədir;
 Arxitektura və dəyişiklik qeydləri: [Layihə analizi](docs/ANALYSIS.az.md).
 
 Rəsmi sənədlər: [Binance USD-M market data](https://developers.binance.com/en/docs/catalog/core-trading-derivatives-trading-usd-s-m-futures/api/rest-api/market-data), [Spring Boot 3.5 servlet web](https://docs.spring.io/spring-boot/3.5/reference/web/servlet.html), [Thymeleaf + Spring](https://www.thymeleaf.org/doc/tutorials/3.1/thymeleafspring.html).
+
+Paneldə orderin ilkin marjası, ilkin mövqe məbləği, xalis USD nəticəsi və marjaya nisbətən gəlir faizi göstərilir. Açıq order nəticəsi hissəli realizə edilmiş nəticə və bid/ask üzrə qalan mövqenin təxmini çıxışını, komissiya/slippage daxil hesablayır. Bağlı nəticə faktikidir. Əlavə məcburi filtrlər: struktur + şam, həcm/OBV, ADX/DI və 15m/1h MACD. Daha seçici girişin gəlirliliyi backtest ilə təsdiqlənməyib; 85/100 uğur ehtimalı deyil.
+
+Funding istiqamət filtri: LONG üçün müsbət, SHORT üçün mənfi rate ödəniş istiqaməti sayılır; bu istiqamətdə son rate 0.03%-dən yüksəkdirsə giriş bloklanır. Mütləq 0.1% limiti də saxlanır. Bu hədlər strategiya seçimidir, backtest nəticəsi deyil. Funding əlavə bal qazandırmır; namizəd siqnallarda məcburi yoxlama kimi panelə yazılır. Funding settlement hələ virtual balansdan tutulmur; göstərilən xalis nəticə ticarət komissiyaları daxildir, funding xaricdir. Mənbə: https://developers.binance.com/docs/derivatives/usds-margined-futures/market-data/rest-api/Mark-Price

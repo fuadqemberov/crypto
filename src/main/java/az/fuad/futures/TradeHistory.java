@@ -30,7 +30,7 @@ final class TradeHistory {
                     catch (NumberFormatException ignored) { /* Older journals may not include an exit. */ }
                 }
                 add(trades, new ClosedTrade(p.id, p.symbol, p.direction, p.openedAt, event.timestamp(),
-                        p.entry, exit, p.initialQuantity, net, p.signal == null ? 0 : p.signal.score(), event.type()));
+                        p.entry, exit, p.initialQuantity, net, p.signal == null ? 0 : p.signal.score(), event.type(), p.quantity>0?p.margin*p.initialQuantity/p.quantity:0));
                 if (net > 0) grossProfit += net;
                 else if (net < 0) { grossLoss -= net; losses++; }
                 else breakeven++;

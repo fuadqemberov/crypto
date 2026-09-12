@@ -98,13 +98,37 @@ public class Analysis {
         gate(checks,d!=0 && trend(h)==d && trend(s)==d && trend(f)!=-d,"Zaman intervalları", "1h və 4h eyni istiqamətdə; 15m əks trenddə deyil");
         gate(checks,atr/a.close()>=.001 && atr/a.close()<=.05 && risk>0,"Volatilite limiti", "ATR / qiymət 0.1–5% aralığında olmalıdır");
         gate(checks,d==1?rsi<=78:d==-1 && rsi>=22,"İfrat RSI filtri", "LONG RSI ≤ 78; SHORT RSI ≥ 22");
-        gate(checks,f.get("emaDistanceAtr")<=3,"Gec giriş filtri", "Qiymət EMA20-dən maksimum 3 ATR uzaqdadır");
+        gate(checks,f.get("emaDistanceAtr")<=2,"Gec giriş filtri", "Qiymət EMA20-dən maksimum 2 ATR uzaqdadır");
+        gate(checks,d!=0 && structure && (engulf||pin||impulse),"Giriş strukturu", "Səviyyə qırılması və ya EMA20 geriçəkilməsi şam təsdiqi ilə birlikdə tələb olunur");
+        gate(checks,f.get("relativeVolume")>=1.2 && d*f.get("obvChange20")>0,"Həcm təsdiqi", "Həcm ≥ 1.2x və OBV istiqaməti məcburidir");
+        gate(checks,f.get("adx14")>=25 && d*(f.get("plusDI")-f.get("minusDI"))>0
+                && d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,
+                "Momentum təsdiqi", "ADX/DI və 15m/1h MACD eyni istiqamətdə olmalıdır");
         gate(checks,all.values().stream().allMatch(Double::isFinite),"Məlumat keyfiyyəti", "Bütün indikatorlar sonlu rəqəm olmalıdır");
         double score=checks.stream().mapToInt(Check::points).sum();
         List<String> reasons=checks.stream().map(c->(c.passed()?"PASS":"FAIL")+" +"+c.points()+" "+c.label()+": "+c.detail()).toList();
         boolean qualified=checks.stream().filter(Check::mandatory).allMatch(Check::passed);
         Signal signal=qualified?new Signal(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),reasons):null;
         return new Report(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),List.copyOf(checks),signal);
+    }
+    public static boolean fundingAllowed(int direction,double rate) {
+        return (direction==1 || direction==-1) && Double.isFinite(rate)
+                && Math.abs(rate)<=.001 && direction*rate<=.0003;
+    }
+    public Report withFunding(Report report,Quote quote) {
+        var checks=new ArrayList<>(report.checks());
+        double rate=quote.funding();
+        gate(checks,quote.fresh() && fundingAllowed(report.direction(),rate),"Funding istiqaməti",
+                "Rate="+String.format(Locale.ROOT,"%.4f%%",rate*100)
+                +" · istiqamət üzrə ödənən rate ≤ 0.03%; mütləq rate ≤ 0.1%. Son açıqlanan rate, gələcək ödəniş zəmanəti deyil");
+        var indicators=new LinkedHashMap<>(report.indicators());
+        if(Double.isFinite(rate)) indicators.put("fundingRatePct",rate*100);
+        var reasons=checks.stream().map(c->(c.passed()?"PASS":"FAIL")+" "+c.label()+": "+c.detail()).toList();
+        boolean pass=report.signal()!=null && checks.stream().filter(Check::mandatory).allMatch(Check::passed);
+        Signal signal=pass?new Signal(report.symbol(),report.direction(),report.score(),report.candleTime(),
+                report.reference(),report.atr(),report.stopDistance(),Map.copyOf(indicators),reasons):null;
+        return new Report(report.symbol(),report.direction(),report.score(),report.candleTime(),report.reference(),
+                report.atr(),report.stopDistance(),Map.copyOf(indicators),List.copyOf(checks),signal);
     }
     private void scored(List<Check> checks,boolean pass,int points,String label,String detail) {
         checks.add(new Check(label,pass,pass?points:0,points,false,detail));
