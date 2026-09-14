@@ -11,6 +11,32 @@ class AnalysisTest {
         for(int i=0;i<300;i++) { double p=100+i*step; c.add(new Candle(i*900000L,p,p+1,p-1,p,100,(i+1)*900000L-1)); }
         return c;
     }
+    @Test void confirmedPivotsAndTargetSpaceAreDirectional() {
+        List<Candle> candles=new ArrayList<>();
+        for(int i=0;i<9;i++) candles.add(new Candle(i,100,101,99,100,100,i+1));
+        candles.set(2,new Candle(2,100,110,99,100,100,3));
+        candles.set(5,new Candle(5,100,101,90,100,100,6));
+        // This last high has no right-side confirmation and must not be used.
+        candles.set(8,new Candle(8,100,120,99,100,100,9));
+        var levels=Analysis.levels(candles,100);
+        assertEquals(90,levels.support(),1e-9);
+        assertEquals(110,levels.resistance(),1e-9);
+        assertTrue(Analysis.hasTargetRoom(1,100,4,2,levels));
+        assertFalse(Analysis.hasTargetRoom(1,102,4,2,levels));
+        assertTrue(Analysis.hasTargetRoom(-1,100,4,2,levels));
+        assertFalse(Analysis.hasTargetRoom(-1,98,4,2,levels));
+        assertNull(Analysis.levels(candles,121).resistance());
+    }
+    @Test void momentumDiagnosticsMatchTheirDefinitions() {
+        var candles=series(.1);
+        var current=Analysis.indicators(candles);
+        var previous=Analysis.indicators(candles.subList(0,candles.size()-1));
+        assertEquals(current.get("macdLine")-current.get("macdSignal"),current.get("macdHistogram"),1e-12);
+        assertEquals(current.get("rsi14")-previous.get("rsi14"),current.get("rsiChange"),1e-12);
+        assertEquals(current.get("macdHistogram")-previous.get("macdHistogram"),current.get("macdHistogramChange"),1e-12);
+        var report=new Analysis().evaluate("UP",candles,candles,candles);
+        assertTrue(report.checks().stream().anyMatch(c->c.label().equals("RSI rejimi") && c.mandatory() && !c.passed()));
+    }
     @Test void fundingIsDirectionalAndNeverAddsProbabilityPoints() {
         assertFalse(Analysis.fundingAllowed(1,.0004));
         assertTrue(Analysis.fundingAllowed(-1,.0004));

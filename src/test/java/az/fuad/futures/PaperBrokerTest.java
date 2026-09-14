@@ -13,6 +13,16 @@ class PaperBrokerTest {
     Signal signal(String symbol,int direction) { return new Signal(symbol,direction,95,System.currentTimeMillis()-10000,100,2,4,Map.of("rsi",55.0),List.of("test")); }
     Quote quote(double p) { return new Quote(p,p-.01,p+.01,System.currentTimeMillis(),.0001); }
     Contract contract(String s) { return new Contract(s,.001,.001,5); }
+    @Test void nearbyResistancePreventsLongEntryWithoutDebitingCash() throws Exception {
+        try(varBroker b=new varBroker(settings())) {
+            var s=new Signal("BTCUSDT",1,95,System.currentTimeMillis()-10000,100,2,4,
+                    Map.of("nearestResistance",103.0),List.of());
+            var decision=b.bot.tryOpen(s,contract("BTCUSDT"),quote(100));
+            assertFalse(decision.opened());
+            assertTrue(decision.reason().contains("dəstək/müqavimət"));
+            assertEquals(2000,b.bot.snapshot().cash);
+        }
+    }
     @Test void allocationFeesAndRestart() throws Exception {
         double cash;
         try(varBroker b=new varBroker(settings())) {
@@ -32,6 +42,7 @@ class PaperBrokerTest {
             assertTrue(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
             var p=b.bot.snapshot().positions.get(0); margin=p.margin;
             assertEquals(140,margin,.04);
+            assertEquals(1859.79,b.bot.snapshot().cash,.04);
             assertEquals(margin*3,p.entry*p.quantity,1e-9);
             assertEquals(2000-margin-p.entry*p.quantity*.0005,b.bot.snapshot().cash,1e-9);
             b.bot.mark("BTCUSDT",quote(105));

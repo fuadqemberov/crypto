@@ -77,6 +77,9 @@ public class PaperBroker {
         double equity=equity(); if(!Double.isFinite(equity) || equity<=0) return rejected("Equity üçün təzə qiymət və müsbət balans lazımdır");
         int d=signal.direction(); if(d!=1 && d!=-1) return rejected("LONG və ya SHORT istiqaməti tələb olunur");
         double entry=(d==1?quote.ask():quote.bid())*(1+d*settings.slippageBps()/10000);
+        var levels=new Analysis.Levels(signal.indicators().get("nearestSupport"),signal.indicators().get("nearestResistance"));
+        if(!Analysis.hasTargetRoom(d,entry,signal.stopDistance(),signal.atr(),levels))
+            return rejected("İcra qiymətindən TP2-yə qədər dəstək/müqavimət boşluğu kifayət deyil");
         double cost=entry*(2*settings.feeRate()+2*settings.slippageBps()/10000+quote.spreadBps()/10000);
         if((2*signal.stopDistance()-cost)/(signal.stopDistance()+cost)<1.5) return rejected("Xərclərdən sonra TP2 risk/gəlir nisbəti 1.5-dən aşağıdır");
         double budget=equity*settings.allocation();
