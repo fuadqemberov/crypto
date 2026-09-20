@@ -79,9 +79,9 @@ class PaperBrokerTest {
     }
     @Test void crashTornTailRecoversButCompleteCorruptionFails() throws Exception {
         try(varBroker b=new varBroker(settings())) { b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)); }
-        Files.writeString(dir.resolve("order_history.txt"),"{broken",StandardOpenOption.APPEND);
+        Files.writeString(dir.resolve("account_journal.jsonl"),"{broken",StandardOpenOption.APPEND);
         try(varBroker b=new varBroker(settings())) { assertEquals(1,b.bot.snapshot().positions.size()); }
-        Files.writeString(dir.resolve("order_history.txt"),"bad-line\n",StandardOpenOption.APPEND);
+        Files.writeString(dir.resolve("account_journal.jsonl"),"bad-line\n",StandardOpenOption.APPEND);
         assertThrows(Exception.class,()->new PaperBroker(settings()));
     }
     @Test void secondProcessCannotOwnAccount() throws Exception {
@@ -129,6 +129,26 @@ class PaperBrokerTest {
             assertFalse(decision.opened()); assertTrue(decision.reason().contains("risk/gəlir"));
             assertEquals(2000,b.bot.snapshot().cash);
         }
+    }
+    @Test void readableHistoryReplaysAndMigratesLegacyJournal() throws Exception {
+        try(varBroker b=new varBroker(settings())) {
+            b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100));
+            b.bot.mark("BTCUSDT",quote(105));
+            b.bot.mark("BTCUSDT",quote(113));
+        }
+        String report=Files.readString(dir.resolve("order_history.txt"));
+        assertTrue(report.contains("Order no1 : PARTIAL"));
+        assertTrue(report.contains("Order no1 : SUCCEEDED"));
+        assertTrue(report.contains("Available:"));
+        Files.delete(dir.resolve("order_history.txt"));
+        Files.move(dir.resolve("account_journal.jsonl"),dir.resolve("order_history.txt"));
+        try(varBroker b=new varBroker(settings())) {
+            assertEquals(1,b.bot.snapshot().closed);
+            assertEquals(report,Files.readString(dir.resolve("order_history.txt")));
+            b.bot.open(signal("ETHUSDT",1),contract("ETHUSDT"),quote(100));
+            b.bot.mark("ETHUSDT",quote(90));
+        }
+        assertTrue(Files.readString(dir.resolve("order_history.txt")).contains("Order no2 : FAILED"));
     }
     private static class varBroker implements AutoCloseable {
         final PaperBroker bot;
