@@ -84,7 +84,9 @@ public class PaperBroker {
         if((2*signal.stopDistance()-cost)/(signal.stopDistance()+cost)<1.5) return rejected("Xərclərdən sonra TP2 risk/gəlir nisbəti 1.5-dən aşağıdır");
         double budget=equity*settings.allocation();
         // Allocate the configured share to margin; entry commission is paid separately.
-        double notional=budget*settings.leverage();
+        // Risk-first sizing: the stop distance decides the lot, the margin share is only a ceiling.
+        // A fixed notional would risk five times more money on a wide-ATR symbol than a tight one.
+        double notional=lotNotional(equity,settings.allocation(),settings.leverage(),settings.riskPerTrade(),signal.stopDistance(),entry);
         double qty=BigDecimal.valueOf(notional/entry).divide(BigDecimal.valueOf(contract.step()),0,RoundingMode.DOWN).multiply(BigDecimal.valueOf(contract.step())).doubleValue();
         if(qty<contract.minQty() || qty*entry<contract.minNotional() || qty<=0 || signal.stopDistance()>=entry*.2) return rejected("Order ölçüsü və ya stop məsafəsi limitə uyğun deyil");
         double fee=qty*entry*settings.feeRate(),margin=qty*entry/settings.leverage();
@@ -99,6 +101,12 @@ public class PaperBroker {
         marks.put(p.symbol,quote); return new OpenDecision(true,"Virtual order açıldı");
     }
     private OpenDecision rejected(String reason) { return new OpenDecision(false,reason); }
+    /** Smaller of the risk-derived lot and the margin-share lot, in quote currency. */
+    public static double lotNotional(double equity,double allocation,int leverage,double riskPerTrade,double stopDistance,double entry) {
+        double byMargin=equity*allocation*leverage;
+        double byRisk=equity*riskPerTrade/stopDistance*entry;
+        return Math.min(byMargin,byRisk);
+    }
     public synchronized void mark(String symbol,Quote quote) throws IOException {
         if(!quote.fresh()) { log.warn("STALE quote {}; position cannot be managed until fresh data arrives",symbol); return; }
         marks.put(symbol,quote);
@@ -109,11 +117,58 @@ public class PaperBroker {
             double distance=existing.direction*(quote.mark()-existing.stop);
             if(distance<=0) { close(existing,exit,1,"STOP_LOSS"); return; }
             if(distance<=existing.risk*settings.stopProximity()) { close(existing,exit,1,"SL_PROXIMITY"); return; }
+            if(expired(existing)) { close(existing,exit,1,"TIME_STOP"); return; }
             double target=existing.stage==0?existing.tp1:existing.stage==1?existing.tp2:existing.tp3;
             if(existing.direction*(exit-target)<0) return;
             double fraction=existing.stage==0?1.0/3:existing.stage==1?.5:1;
             close(existing,exit,fraction,"TP"+(existing.stage+1));
         }
+    }
+    private boolean expired(Position p) {
+        return settings.maxHoldMs()>0 && System.currentTimeMillis()-p.openedAt>settings.maxHoldMs();
+    }
+    /** Price a stop or target fills at, with the same slippage the live path applies. */
+    private double fill(double level,int direction) { return level*(1-direction*settings.slippageBps()/10000); }
+    /** One exit a historical candle owes an open position: which level filled, and how much of it. */
+    public record GapFill(String reason,double level,double fraction) {}
+    /**
+     * What a single closed candle does to a position that was open while the bot was down.
+     * A candle spanning both sides is scored as the loss: the stop is assumed to come first, never
+     * the target, because the true order of touches inside a candle is unknowable.
+     *
+     * @return the exit this candle triggers, or null when the position survives it
+     */
+    public static GapFill gapFill(Position p,Candle candle,double stopProximity,long maxHoldMs) {
+        if(candle.closeTime()<=p.openedAt) return null;
+        int d=p.direction;
+        double adverse=d==1?candle.low():candle.high(),favorable=d==1?candle.high():candle.low();
+        double trigger=p.stop+d*p.risk*stopProximity;
+        if(d*(adverse-trigger)<=0) return new GapFill("GAP_STOP_LOSS",trigger,1);
+        double target=p.stage==0?p.tp1:p.stage==1?p.tp2:p.tp3;
+        if(d*(favorable-target)>=0) return new GapFill("GAP_TP"+(p.stage+1),target,p.stage==0?1.0/3:p.stage==1?.5:1);
+        if(maxHoldMs>0 && candle.closeTime()-p.openedAt>maxHoldMs) return new GapFill("GAP_TIME_STOP",candle.close(),1);
+        return null;
+    }
+    /**
+     * Replays closed candles over a restored position so exits missed while the process was down are
+     * booked at their own level instead of at whatever price is live after the restart.
+     *
+     * @return the number of exits filled from history
+     */
+    public synchronized int replay(String symbol,List<Candle> candles) throws IOException {
+        int fills=0;
+        for(Candle candle:candles) {
+            while(true) {
+                Position p=account.positions.stream().filter(x->x.symbol.equals(symbol)).findFirst().orElse(null);
+                if(p==null) return fills;
+                GapFill gap=gapFill(p,candle,settings.stopProximity(),settings.maxHoldMs());
+                if(gap==null) break;
+                close(p,fill(gap.level(),p.direction),gap.fraction(),gap.reason());
+                fills++;
+                if(gap.fraction()==1) return fills;
+            }
+        }
+        return fills;
     }
     private void close(Position old,double price,double fraction,String reason) throws IOException {
         Account next=journal.copy(account);

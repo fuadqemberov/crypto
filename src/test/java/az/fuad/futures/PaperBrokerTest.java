@@ -9,10 +9,71 @@ import static az.fuad.futures.Models.*;
 
 class PaperBrokerTest {
     @TempDir Path dir;
-    Settings settings() { return new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,85,0,15,.0005,3,.15,350,""); }
+    Settings settings() { return new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,85,0,15,.0005,3,.15,350,"",.01,0,0); }
     Signal signal(String symbol,int direction) { return new Signal(symbol,direction,95,System.currentTimeMillis()-10000,100,2,4,Map.of("rsi",55.0),List.of("test")); }
     Quote quote(double p) { return new Quote(p,p-.01,p+.01,System.currentTimeMillis(),.0001); }
     Contract contract(String s) { return new Contract(s,.001,.001,5); }
+    Settings settings(long maxHoldMs) { return new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,3,5,85,0,15,.0005,3,.15,350,"",.005,maxHoldMs,0); }
+    @Test void lotIsCappedByRiskOnWideStopsAndByMarginShareOnTightOnes() {
+        // 7% of 2000 at 3x leaves 420 of notional; a 10-wide stop at 0.5% risk allows only 100.
+        assertEquals(100,PaperBroker.lotNotional(2000,.07,3,.005,10,100),1e-9);
+        assertEquals(420,PaperBroker.lotNotional(2000,.07,3,.005,1,100),1e-9);
+    }
+    @Test void aWideStopRisksTheSameMoneyAsATightOne() throws Exception {
+        try(varBroker b=new varBroker(settings(0))) {
+            var wide=new Signal("BTCUSDT",1,95,System.currentTimeMillis()-10000,100,4,8,Map.of(),List.of());
+            assertTrue(b.bot.open(wide,contract("BTCUSDT"),quote(100)));
+            var p=b.bot.snapshot().positions.get(0);
+            assertEquals(2000*.005,Math.abs(p.entry-p.stop)*p.quantity,.05);
+            assertTrue(p.margin<140,"Risk, not the margin share, must decide a wide-stop lot");
+        }
+    }
+    @Test void offlineStopIsFilledAtItsOwnLevelNotAtTheLivePrice() throws Exception {
+        try(varBroker b=new varBroker(settings())) {
+            assertTrue(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
+            var p=b.bot.snapshot().positions.get(0);
+            long close=System.currentTimeMillis()+1000;
+            // The candle collapses to 61 while the process is down; the stop still owns the fill.
+            assertEquals(1,b.bot.replay("BTCUSDT",List.of(new Candle(close-60000,100,100.5,60,61,10,close))));
+            var trade=b.bot.view().trades().get(0);
+            assertEquals("GAP_STOP_LOSS",trade.reason());
+            assertEquals((p.stop+p.risk*.15)*(1-.0003),trade.exit(),1e-9);
+            assertEquals(1,b.bot.snapshot().closed); assertEquals(0,b.bot.snapshot().wins);
+        }
+    }
+    @Test void offlineTargetsFillInOrderAndAStopOnTheSameCandleWinsOverTheTarget() throws Exception {
+        try(varBroker b=new varBroker(settings())) {
+            b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100));
+            var p=b.bot.snapshot().positions.get(0);
+            long close=System.currentTimeMillis()+1000;
+            // Stays above the break-even trigger TP1 installs, so only the target fills.
+            double low=p.entry+p.risk*.15+.01;
+            assertEquals(1,b.bot.replay("BTCUSDT",List.of(new Candle(close-60000,low+.05,p.tp1,low,p.tp1,10,close))));
+            var open=b.bot.snapshot().positions.get(0);
+            assertEquals(1,open.stage); assertEquals(open.entry,open.stop,1e-9);
+            // One candle spanning both sides is scored as the loss, never as the win.
+            long later=close+60000;
+            b.bot.replay("BTCUSDT",List.of(new Candle(later-60000,open.entry,open.tp3,60,61,10,later)));
+            assertTrue(b.bot.snapshot().positions.isEmpty());
+            assertEquals("GAP_STOP_LOSS",b.bot.view().trades().get(0).reason());
+        }
+    }
+    @Test void aPositionHeldPastTheHoldLimitIsClosedInsteadOfDriftingUnmanaged() throws Exception {
+        try(varBroker b=new varBroker(settings(900000))) {
+            b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100));
+            long close=System.currentTimeMillis()+901000;
+            assertEquals(1,b.bot.replay("BTCUSDT",List.of(new Candle(close-60000,100,101,99,100,10,close))));
+            assertEquals("GAP_TIME_STOP",b.bot.view().trades().get(0).reason());
+        }
+    }
+    @Test void replayIgnoresCandlesThatClosedBeforeTheEntry() throws Exception {
+        try(varBroker b=new varBroker(settings())) {
+            b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100));
+            long before=System.currentTimeMillis()-60000;
+            assertEquals(0,b.bot.replay("BTCUSDT",List.of(new Candle(before-60000,100,101,10,11,10,before))));
+            assertEquals(1,b.bot.snapshot().positions.size());
+        }
+    }
     @Test void nearbyResistancePreventsLongEntryWithoutDebitingCash() throws Exception {
         try(varBroker b=new varBroker(settings())) {
             var s=new Signal("BTCUSDT",1,95,System.currentTimeMillis()-10000,100,2,4,
@@ -36,7 +97,7 @@ class PaperBrokerTest {
         assertTrue(Files.readString(dir.resolve("order_history.txt")).contains("OPEN"));
     }
     @Test void threeTimesLeverageAllocatesSevenPercentMarginAndPersistsIt() throws Exception {
-        Settings s=new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,3,5,85,0,15,.0005,3,.15,350,"");
+        Settings s=new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,3,5,85,0,15,.0005,3,.15,350,"",.01,0,0);
         double margin;
         try(varBroker b=new varBroker(s)) {
             assertTrue(b.bot.open(signal("BTCUSDT",1),contract("BTCUSDT"),quote(100)));
@@ -107,8 +168,8 @@ class PaperBrokerTest {
             Signal qualified=new Signal("BTCUSDT",1,85,System.currentTimeMillis()-10000,100,2,4,Map.of(),List.of());
             assertTrue(b.bot.open(qualified,contract("BTCUSDT"),quote(100)));
         }
-        assertThrows(IllegalArgumentException.class,()->new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,84.99,0,15,.0005,3,.15,350,""));
-        assertThrows(IllegalArgumentException.class,()->new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,Double.NaN,0,15,.0005,3,.15,350,""));
+        assertThrows(IllegalArgumentException.class,()->new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,84.99,0,15,.0005,3,.15,350,"",.01,0,0));
+        assertThrows(IllegalArgumentException.class,()->new Settings(false,"https://fapi.binance.com",dir.toString(),2000,.07,1,5,Double.NaN,0,15,.0005,3,.15,350,"",.01,0,0));
     }
     @Test void completedTradeProjectionIncludesEveryFillAndEntryFeeAcrossRestart() throws Exception {
         double net;

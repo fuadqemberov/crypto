@@ -37,6 +37,25 @@ class AnalysisTest {
         var report=new Analysis().evaluate("UP",candles,candles,candles);
         assertTrue(report.checks().stream().anyMatch(c->c.label().equals("RSI rejimi") && c.mandatory() && !c.passed()));
     }
+    @Test void higherTimeframeExhaustionIsGatedAndMirroredForShorts() {
+        // Values taken from the journal: ZAMAUSDT lost 22% of its margin out of a 4h blow-off that
+        // every 15m gate waved through, while AKEUSDT and BCHUSDT must still pass.
+        Map<String,Double> zamaSlow=Map.of("rsi14",93.75,"stochasticK",95.18,"emaDistanceAtr",5.41,"relativeVolume",7.11);
+        Map<String,Double> akeSlow=Map.of("rsi14",70.48,"stochasticK",87.90,"emaDistanceAtr",2.00,"relativeVolume",3.06);
+        assertFalse(Analysis.exhaustionAllowed(1,zamaSlow));
+        assertTrue(Analysis.exhaustionAllowed(1,akeSlow));
+        assertTrue(zamaSlow.get("emaDistanceAtr")>Analysis.MAX_SLOW_EMA_DISTANCE_ATR);
+        assertTrue(zamaSlow.get("relativeVolume")>Analysis.MAX_SLOW_RELATIVE_VOLUME);
+        assertTrue(akeSlow.get("emaDistanceAtr")<=Analysis.MAX_SLOW_EMA_DISTANCE_ATR);
+        assertTrue(akeSlow.get("relativeVolume")<=Analysis.MAX_SLOW_RELATIVE_VOLUME);
+        // The short side mirrors at 100: BCHUSDT passes, a capitulation low does not.
+        assertTrue(Analysis.exhaustionAllowed(-1,Map.of("rsi14",39.44,"stochasticK",35.77)));
+        assertFalse(Analysis.exhaustionAllowed(-1,Map.of("rsi14",6.2,"stochasticK",4.8)));
+        // A saturated stochastic must not veto on its own: TRUMPUSDT's 1h stochastic was 1.8 in a
+        // clean downtrend, and its only real problem was an offline stop.
+        assertTrue(Analysis.exhaustionAllowed(-1,Map.of("rsi14",32.07,"stochasticK",16.13)));
+        assertFalse(Analysis.exhaustionAllowed(0,akeSlow));
+    }
     @Test void fundingIsDirectionalAndNeverAddsProbabilityPoints() {
         assertFalse(Analysis.fundingAllowed(1,.0004));
         assertTrue(Analysis.fundingAllowed(-1,.0004));

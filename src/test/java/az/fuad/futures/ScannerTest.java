@@ -12,7 +12,7 @@ class ScannerTest {
     @Test void scannerNeverRequestsEntryQuoteBelowThresholdAndAcceptsEightyFive() throws Exception {
         for(double score:new double[]{84.999,85}) {
             Settings settings=new Settings(true,"https://fapi.binance.com",directory.resolve("score-"+score).toString(),
-                    2000,.07,1,5,85,0,15,.0005,3,.15,350,"BTCUSDT");
+                    2000,.07,1,5,85,0,15,.0005,3,.15,350,"BTCUSDT",.01,0,0);
             long time=System.currentTimeMillis()-10000;
             var candle=new Candle(time-899999,99,101,98,100,100,time);
             class Client extends BinanceClient {

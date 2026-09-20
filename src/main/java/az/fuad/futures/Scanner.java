@@ -1,9 +1,12 @@
 package az.fuad.futures;
 
 import org.slf4j.*;
+import org.springframework.boot.context.event.ApplicationReadyEvent;
+import org.springframework.context.event.EventListener;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import java.util.*;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 @Component
 public class Scanner {
@@ -14,9 +17,38 @@ public class Scanner {
     private final PaperBroker broker;
     private final DashboardState dashboard;
     private final Map<String,Long> analyzed=new HashMap<>();
+    private final Map<String,Long> lastMark=new HashMap<>();
+    private final AtomicBoolean recovered=new AtomicBoolean();
     public Scanner(Settings settings,BinanceClient client,Analysis analysis,PaperBroker broker,DashboardState dashboard) {
         this.settings=settings; this.client=client; this.analysis=analysis; this.broker=broker;
         this.dashboard=dashboard;
+    }
+    /**
+     * Books the exits a restored position hit while this process was down, before the live monitor
+     * gets a chance to close it at the price that happens to be on the screen after a restart.
+     * The monitor stays idle until this has run, so the two can never race over the same position.
+     */
+    @EventListener(ApplicationReadyEvent.class)
+    public void recoverOfflineFills() {
+        try {
+            if(!settings.enabled()) return;
+            var open=broker.snapshot().positions;
+            if(open.isEmpty()) { log.info("RECOVERY: no restored position"); return; }
+            for(var position:open) {
+                long offlineMinutes=(System.currentTimeMillis()-position.openedAt)/60000;
+                try {
+                    var candles=client.closedCandlesSince(position.symbol,"1m",position.openedAt,12);
+                    int fills=broker.replay(position.symbol,candles);
+                    log.info("RECOVERY {} open for {} min: {} 1m candles replayed, {} offline fill(s)",
+                            position.symbol,offlineMinutes,candles.size(),fills);
+                    if(fills>0) dashboard.error(position.symbol+": offline dövrdə "+fills+" çıxış bərpa edildi");
+                } catch(InterruptedException e) { Thread.currentThread().interrupt(); return; }
+                catch(Exception e) {
+                    log.error("RECOVERY {}: {}. Position stays open and is managed live from now on.",position.symbol,e.toString());
+                    dashboard.error("Bərpa "+position.symbol+": "+e.getMessage());
+                }
+            }
+        } finally { recovered.set(true); }
     }
     @Scheduled(initialDelay=3000,fixedDelayString="${bot.scan-delay-ms:60000}")
     public void scan() {
@@ -73,11 +105,21 @@ public class Scanner {
     }
     @Scheduled(initialDelay=1000,fixedDelayString="${bot.monitor-delay-ms:5000}")
     public void monitor() {
-        if(!settings.enabled()) return;
-        for(String symbol:broker.symbols()) {
-            try { broker.mark(symbol,client.quote(symbol)); }
+        if(!settings.enabled() || !recovered.get()) return;
+        List<String> open=broker.symbols();
+        lastMark.keySet().retainAll(new HashSet<>(open));
+        for(String symbol:open) {
+            lastMark.putIfAbsent(symbol,System.currentTimeMillis());
+            try { broker.mark(symbol,client.quote(symbol)); lastMark.put(symbol,System.currentTimeMillis()); }
             catch(InterruptedException e) { Thread.currentThread().interrupt(); return; }
             catch(Exception e) { dashboard.error("Qiymət monitoru "+symbol+": "+e.getMessage()); log.error("MONITOR {}: {}. Virtual exits delayed until connection recovers.",symbol,e.toString()); }
+            // Silence here used to look identical to a healthy position: an unmanaged stop is the
+            // single most expensive failure this bot has had, so it is surfaced loudly.
+            long silence=System.currentTimeMillis()-lastMark.getOrDefault(symbol,System.currentTimeMillis());
+            if(settings.staleMarkMs()>0 && silence>settings.staleMarkMs()) {
+                String message=symbol+": "+silence/1000+" saniyədir təzə qiymət yoxdur — mövqe İDARƏ OLUNMUR, TP/SL icra edilmir";
+                dashboard.error(message); log.error("UNMANAGED {}",message);
+            }
         }
     }
 }

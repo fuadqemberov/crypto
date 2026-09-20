@@ -73,6 +73,35 @@ public class BinanceClient {
         for(int i=1;i<result.size();i++) if(result.get(i).openTime()-result.get(i-1).openTime()!=duration) throw new IllegalStateException("Candle gap "+symbol);
         return result;
     }
+    /**
+     * Closed candles from {@code startTime} forward, paged. Used to replay the stop and target
+     * touches that happened while this process was down: without them a restored position would be
+     * closed at whatever price is live after the restart instead of at its own level.
+     */
+    public List<Candle> closedCandlesSince(String symbol,String interval,long startTime,int maxPages) throws Exception {
+        long duration=switch(interval) { case "1m" -> 60000L; case "15m" -> 900000L; case "1h" -> 3600000L; case "4h" -> 14400000L; default -> throw new IllegalArgumentException(interval); };
+        if(startTime<=0 || maxPages<1) throw new IllegalArgumentException("Bərpa üçün etibarlı başlanğıc vaxtı lazımdır");
+        long now=System.currentTimeMillis(),cursor=startTime;
+        List<Candle> result=new ArrayList<>();
+        for(int page=0;page<maxPages && cursor<now;page++) {
+            var rows=get("/fapi/v1/klines?symbol="+symbol+"&interval="+interval+"&startTime="+cursor+"&limit=1500");
+            int before=result.size();
+            for(var n:rows) {
+                long closeTime=n.get(6).asLong();
+                if(closeTime>=now-2000) continue;
+                Candle c=new Candle(n.get(0).asLong(),n.get(1).asDouble(),n.get(2).asDouble(),n.get(3).asDouble(),n.get(4).asDouble(),n.get(5).asDouble(),closeTime);
+                if(java.util.stream.DoubleStream.of(c.open(),c.high(),c.low(),c.close(),c.volume()).anyMatch(v->!Double.isFinite(v))
+                        || c.open()<=0 || c.close()<=0 || c.low()<=0 || c.high()<Math.max(c.open(),c.close())
+                        || c.low()>Math.min(c.open(),c.close()) || c.volume()<0)
+                    throw new IllegalStateException("Invalid candle "+symbol);
+                if(!result.isEmpty() && c.openTime()<=result.get(result.size()-1).openTime()) continue;
+                result.add(c);
+            }
+            if(result.size()==before) break;
+            cursor=result.get(result.size()-1).openTime()+duration;
+        }
+        return result;
+    }
     public Quote quote(String symbol) throws Exception {
         var m=get("/fapi/v1/premiumIndex?symbol="+symbol);
         var b=get("/fapi/v1/ticker/bookTicker?symbol="+symbol);

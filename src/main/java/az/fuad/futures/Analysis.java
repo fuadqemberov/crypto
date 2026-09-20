@@ -6,6 +6,24 @@ import static az.fuad.futures.Models.*;
 
 @Component
 public class Analysis {
+    /** 4h exhaustion limits. A LONG uses the value, a SHORT its mirror at 100. */
+    public static final double MAX_SLOW_RSI=85;
+    public static final double MAX_SLOW_EMA_DISTANCE_ATR=4, MAX_SLOW_RELATIVE_VOLUME=5;
+    /**
+     * Rejects an entry taken into an exhausted 4h leg. Deliberately RSI only: a stochastic saturates
+     * for the whole length of a strong trend, which is the regime this strategy trades, so vetoing
+     * on it rejects healthy signals — TRUMPUSDT's 1h stochastic sat at 1.8 inside a clean downtrend
+     * whose only problem was that the bot was offline when the stop was hit. 1h RSI is already
+     * bounded by the "RSI rejimi" gate; 4h was the timeframe with no mandatory check at all.
+     *
+     * @param slow the 4h indicator map as {@link #indicators} returns it
+     */
+    public static boolean exhaustionAllowed(int direction,Map<String,Double> slow) {
+        double rsi=slow.get("rsi14");
+        if(direction==1) return rsi<=MAX_SLOW_RSI;
+        if(direction==-1) return rsi>=100-MAX_SLOW_RSI;
+        return false;
+    }
     public static double[] ema(double[] x,int period) {
         if(x.length==0 || period<1) throw new IllegalArgumentException("EMA üçün məlumat və müsbət period lazımdır");
         double[] out=new double[x.length]; out[0]=x[0]; double k=2.0/(period+1);
@@ -104,14 +122,27 @@ public class Analysis {
         gate(checks,atr/a.close()>=.001 && atr/a.close()<=.05 && risk>0,"Volatilite limiti", "ATR / qiymət 0.1–5% aralığında olmalıdır");
         gate(checks,d==1?rsi<=78:d==-1 && rsi>=22,"İfrat RSI filtri", "LONG RSI ≤ 78; SHORT RSI ≥ 22");
         gate(checks,f.get("emaDistanceAtr")<=2,"Gec giriş filtri", "Qiymət EMA20-dən maksimum 2 ATR uzaqdadır");
+        // Every mandatory filter above reads 15m only, so a parabolic 4h blow-off can pass them all
+        // while the higher timeframes are exhausted. These three gates close that hole.
+        gate(checks,exhaustionAllowed(d,s),"4h ifrat rejimi",
+                String.format(Locale.ROOT,"4h RSI %.1f; LONG ≤ %.0f / SHORT ≥ %.0f",s.get("rsi14"),MAX_SLOW_RSI,100-MAX_SLOW_RSI));
+        gate(checks,s.get("emaDistanceAtr")<=MAX_SLOW_EMA_DISTANCE_ATR,"4h gec giriş filtri",
+                String.format(Locale.ROOT,"Qiymət 4h EMA20-dən %.2f ATR uzaqdadır; limit %.0f",
+                        s.get("emaDistanceAtr"),MAX_SLOW_EMA_DISTANCE_ATR));
+        gate(checks,s.get("relativeVolume")<=MAX_SLOW_RELATIVE_VOLUME,"Blow-off həcm filtri",
+                String.format(Locale.ROOT,"4h həcm 20 şam ortalamasının %.2f qatıdır; limit %.0f",
+                        s.get("relativeVolume"),MAX_SLOW_RELATIVE_VOLUME));
         gate(checks,d!=0 && structure && (engulf||pin||impulse),"Giriş strukturu", "Səviyyə qırılması və ya EMA20 geriçəkilməsi şam təsdiqi ilə birlikdə tələb olunur");
         gate(checks,f.get("relativeVolume")>=1.2 && d*f.get("obvChange20")>0,"Həcm təsdiqi", "Həcm ≥ 1.2x və OBV istiqaməti məcburidir");
         gate(checks,f.get("adx14")>=25 && d*(f.get("plusDI")-f.get("minusDI"))>0
                 && d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,
                 "Momentum təsdiqi", "ADX/DI və 15m/1h MACD eyni istiqamətdə olmalıdır");
-        gate(checks,d==1?rsi>=50 && rsi<=70 && hourlyRsi>=50 && hourlyRsi<=72
-                :d==-1 && rsi>=30 && rsi<=50 && hourlyRsi>=28 && hourlyRsi<=50,
-                "RSI rejimi",String.format(Locale.ROOT,"15m RSI %.2f; 1h RSI %.2f. LONG 50–70 / 50–72, SHORT 30–50 / 28–50",rsi,hourlyRsi));
+        // The 15m ceiling is deliberately looser than the scored 50–70 band: an impulse entry often
+        // prints a 15m RSI in the low seventies, and the exhaustion that actually hurts shows up on
+        // 1h and 4h, which the gates below cover.
+        gate(checks,d==1?rsi>=50 && rsi<=76 && hourlyRsi>=50 && hourlyRsi<=72
+                :d==-1 && rsi>=24 && rsi<=50 && hourlyRsi>=28 && hourlyRsi<=50,
+                "RSI rejimi",String.format(Locale.ROOT,"15m RSI %.2f; 1h RSI %.2f. LONG 50–76 / 50–72, SHORT 24–50 / 28–50",rsi,hourlyRsi));
         gate(checks,d*f.get("rsiChange")>=0,"RSI meyli",
                 String.format(Locale.ROOT,"Son bağlanmış 15m şamda RSI dəyişməsi %.3f; momentum istiqamətə əks zəifləməməlidir",f.get("rsiChange")));
         gate(checks,d*f.get("macdHistogramChange")>0 && d*h.get("macdHistogramChange")>=0,
