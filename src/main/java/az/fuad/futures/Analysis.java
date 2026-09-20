@@ -23,7 +23,7 @@ public class Analysis {
         }
         double[] close=c.stream().mapToDouble(Candle::close).toArray();
         double[] volume=c.stream().mapToDouble(Candle::volume).toArray();
-        double gain=0,loss=0,atr=0,plus=0,minus=0,adx=0,obv=0,obvPast=0;
+        double gain=0,loss=0,atr=0,plus=0,minus=0,adx=0,obv=0,obvPast=0,previousRsi=50;
         double[] e12=ema(close,12),e26=ema(close,26),macd=new double[n];
         for(int i=0;i<n;i++) macd[i]=e12[i]-e26[i];
         for(int i=1;i<n;i++) {
@@ -35,6 +35,7 @@ public class Analysis {
             if(i<=14) { gain+=Math.max(change,0)/14; loss+=Math.max(-change,0)/14; atr+=tr/14; plus+=pd/14; minus+=md/14; }
             else { gain=(gain*13+Math.max(change,0))/14; loss=(loss*13+Math.max(-change,0))/14; atr=(atr*13+tr)/14; plus=(plus*13+pd)/14; minus=(minus*13+md)/14; }
             if(i>=14) { double dx=(plus+minus)==0?0:100*Math.abs(plus-minus)/(plus+minus); if(i<=27) adx+=dx/14; else adx=(adx*13+dx)/14; }
+            if(i==n-2) previousRsi=loss==0?(gain==0?50:100):100-100/(1+gain/loss);
             obv+=Math.signum(change)*a.volume(); if(i==n-21) obvPast=obv;
         }
         double mean=avg(close,n-20,n),variance=0,pv=0,v=0,high=-Double.MAX_VALUE,low=Double.MAX_VALUE;
@@ -45,6 +46,10 @@ public class Analysis {
         Map<String,Double> m=new LinkedHashMap<>();
         m.put("close",last(close)); m.put("ema20",last(ema(close,20))); m.put("ema50",last(ema(close,50))); m.put("ema200",last(ema(close,200)));
         m.put("rsi14",loss==0 ? (gain==0?50:100) : 100-100/(1+gain/loss));
+        m.put("rsiChange",m.get("rsi14")-previousRsi);
+        double[] macdSignal=ema(macd,9);
+        m.put("macdLine",last(macd)); m.put("macdSignal",last(macdSignal));
+        m.put("macdHistogramChange",(last(macd)-last(macdSignal))-(macd[n-2]-macdSignal[n-2]));
         m.put("atr14",atr); m.put("adx14",adx); m.put("plusDI",atr==0?0:100*plus/atr); m.put("minusDI",atr==0?0:100*minus/atr);
         m.put("macdHistogram",last(macd)-last(ema(macd,9))); m.put("bollingerUpper",mean+2*Math.sqrt(variance)); m.put("bollingerLower",mean-2*Math.sqrt(variance));
         m.put("rollingVwap20",v==0?mean:pv/v); m.put("relativeVolume",avg(volume,n-21,n-1)==0?0:last(volume)/avg(volume,n-21,n-1));
@@ -104,12 +109,57 @@ public class Analysis {
         gate(checks,f.get("adx14")>=25 && d*(f.get("plusDI")-f.get("minusDI"))>0
                 && d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,
                 "Momentum təsdiqi", "ADX/DI və 15m/1h MACD eyni istiqamətdə olmalıdır");
+        gate(checks,d==1?rsi>=50 && rsi<=70 && hourlyRsi>=50 && hourlyRsi<=72
+                :d==-1 && rsi>=30 && rsi<=50 && hourlyRsi>=28 && hourlyRsi<=50,
+                "RSI rejimi",String.format(Locale.ROOT,"15m RSI %.2f; 1h RSI %.2f. LONG 50–70 / 50–72, SHORT 30–50 / 28–50",rsi,hourlyRsi));
+        gate(checks,d*f.get("rsiChange")>=0,"RSI meyli",
+                String.format(Locale.ROOT,"Son bağlanmış 15m şamda RSI dəyişməsi %.3f; momentum istiqamətə əks zəifləməməlidir",f.get("rsiChange")));
+        gate(checks,d*f.get("macdHistogramChange")>0 && d*h.get("macdHistogramChange")>=0,
+                "MACD sürəti",String.format(Locale.ROOT,"15m line %.6f / signal %.6f / histogram dəyişməsi %.6f; 1h dəyişmə %.6f",
+                f.get("macdLine"),f.get("macdSignal"),f.get("macdHistogramChange"),h.get("macdHistogramChange")));
+        Levels levels=mergeLevels(a.close(),levels(fast,a.close()),levels(hourly,a.close()),levels(slow,a.close()));
+        if(levels.support()!=null) all.put("nearestSupport",levels.support());
+        if(levels.resistance()!=null) all.put("nearestResistance",levels.resistance());
+        gate(checks,hasTargetRoom(d,a.close(),risk,atr,levels),"Dəstək / müqavimət məsafəsi",
+                "Təsdiqlənmiş 15m/1h/4h pivotları: dəstək="+levels.support()+"; müqavimət="+levels.resistance()
+                +". TP2 üçün 2R + 0.25 ATR boşluq tələb olunur. Səviyyə yoxdursa maneə naməlumdur.");
         gate(checks,all.values().stream().allMatch(Double::isFinite),"Məlumat keyfiyyəti", "Bütün indikatorlar sonlu rəqəm olmalıdır");
         double score=checks.stream().mapToInt(Check::points).sum();
         List<String> reasons=checks.stream().map(c->(c.passed()?"PASS":"FAIL")+" +"+c.points()+" "+c.label()+": "+c.detail()).toList();
         boolean qualified=checks.stream().filter(Check::mandatory).allMatch(Check::passed);
         Signal signal=qualified?new Signal(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),reasons):null;
         return new Report(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),List.copyOf(checks),signal);
+    }
+    public record Levels(Double support,Double resistance) {}
+    public static Levels levels(List<Candle> candles,double price) {
+        Double support=null,resistance=null;
+        // A pivot needs two closed candles on each side; never use future candles.
+        for(int i=Math.max(2,candles.size()-120);i<candles.size()-2;i++) {
+            Candle pivot=candles.get(i);
+            boolean high=true,low=true;
+            for(int j=i-2;j<=i+2;j++) {
+                if(j==i) continue;
+                high &= pivot.high()>candles.get(j).high();
+                low &= pivot.low()<candles.get(j).low();
+            }
+            if(high && pivot.high()>price && (resistance==null || pivot.high()<resistance)) resistance=pivot.high();
+            if(low && pivot.low()<price && (support==null || pivot.low()>support)) support=pivot.low();
+        }
+        return new Levels(support,resistance);
+    }
+    private static Levels mergeLevels(double price,Levels... levels) {
+        Double support=null,resistance=null;
+        for(Levels level:levels) {
+            if(level.support()!=null && level.support()<price && (support==null || level.support()>support)) support=level.support();
+            if(level.resistance()!=null && level.resistance()>price && (resistance==null || level.resistance()<resistance)) resistance=level.resistance();
+        }
+        return new Levels(support,resistance);
+    }
+    public static boolean hasTargetRoom(int direction,double price,double risk,double atr,Levels levels) {
+        double distance=2*risk+.25*atr;
+        if(direction==1) return levels.resistance()==null || levels.resistance()-price>=distance;
+        if(direction==-1) return levels.support()==null || price-levels.support()>=distance;
+        return false;
     }
     public static boolean fundingAllowed(int direction,double rate) {
         return (direction==1 || direction==-1) && Double.isFinite(rate)
