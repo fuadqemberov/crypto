@@ -8,10 +8,11 @@ public final class Models {
                          double volume, long closeTime) {}
     public record Contract(String symbol, double step, double minQty, double minNotional) {}
     public record Quote(double mark, double bid, double ask, long time, double funding) {
-        public boolean fresh() {
+        public boolean fresh() { return fresh(System.currentTimeMillis()); }
+        public boolean fresh(long now) {
             return Double.isFinite(mark) && Double.isFinite(bid) && Double.isFinite(ask)
                     && Double.isFinite(funding) && mark > 0 && bid > 0 && ask >= bid
-                    && time > System.currentTimeMillis() - 30000 && time <= System.currentTimeMillis() + 2000;
+                    && time > now - 30000 && time <= now + 2000;
         }
         public double spreadBps() { return (ask-bid)/((bid+ask)/2)*10000; }
     }

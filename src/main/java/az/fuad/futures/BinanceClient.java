@@ -14,19 +14,36 @@ public class BinanceClient {
     private final Settings settings;
     private final ObjectMapper json = new ObjectMapper();
     private final HttpClient http = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
-    private long nextRequest, blockedUntil;
-    public BinanceClient(Settings settings) { this.settings=settings; }
+    private final int maxWeight;
+    private long nextRequest, blockedUntil, pausedUntil;
+    public BinanceClient(Settings settings) { this(settings,Feed.defaults()); }
+    @org.springframework.beans.factory.annotation.Autowired
+    public BinanceClient(Settings settings,Feed feed) { this.settings=settings; this.maxWeight=feed.maxWeightPerMinute(); }
     private synchronized void permit() throws InterruptedException {
         long now=System.currentTimeMillis();
         if (now < blockedUntil) throw new IllegalStateException("Binance rate-limit cooldown until " + blockedUntil);
-        long delay=nextRequest-now;
+        long delay=Math.max(nextRequest,pausedUntil)-now;
         if (delay>0) Thread.sleep(delay);
         nextRequest=System.currentTimeMillis()+settings.requestSpacingMs();
+    }
+    /**
+     * Binance reports the weight used in the current minute on every response. Pausing near the
+     * budget replaces a large fixed spacing: requests go out back to back until it is needed.
+     */
+    private synchronized void observeWeight(HttpResponse<?> response) {
+        try {
+            int used=Integer.parseInt(response.headers().firstValue("X-MBX-USED-WEIGHT-1M").orElse("0"));
+            if(used>=maxWeight) {
+                long now=System.currentTimeMillis();
+                pausedUntil=Math.max(pausedUntil,(now/60000+1)*60000+250);
+            }
+        } catch(NumberFormatException ignored) { }
     }
     public JsonNode get(String path) throws Exception {
         permit();
         var request=HttpRequest.newBuilder(URI.create(settings.baseUrl()+path)).timeout(Duration.ofSeconds(15)).GET().build();
         var response=http.send(request,HttpResponse.BodyHandlers.ofString());
+        observeWeight(response);
         if (response.statusCode()==429 || response.statusCode()==418) {
             long seconds=response.statusCode()==418 ? 3600 : 120;
             try { seconds=Math.max(seconds,Long.parseLong(response.headers().firstValue("Retry-After").orElse("120"))); }

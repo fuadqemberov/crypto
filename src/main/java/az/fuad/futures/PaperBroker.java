@@ -21,9 +21,13 @@ public class PaperBroker {
     private boolean failed;
     private final TradeHistory history=new TradeHistory();
     private final Map<String,Quote> marks=new HashMap<>();
+    /** Wall clock live; simulated time in the backtest, which drives this same class. */
+    private final java.util.function.LongSupplier clock;
+    private java.util.function.Consumer<Map<String,Object>> closeListener=data->{};
     public PaperBroker(Settings settings) throws IOException { this(settings,Strategy.defaults()); }
-    @Autowired public PaperBroker(Settings settings,Strategy cfg) throws IOException {
-        this.settings=settings; this.cfg=cfg; journal=new Journal(Path.of(settings.dataDir()));
+    @Autowired public PaperBroker(Settings settings,Strategy cfg) throws IOException { this(settings,cfg,System::currentTimeMillis); }
+    public PaperBroker(Settings settings,Strategy cfg,java.util.function.LongSupplier clock) throws IOException {
+        this.settings=settings; this.cfg=cfg; this.clock=clock; journal=new Journal(Path.of(settings.dataDir()));
         try { account=journal.load(settings.initialBalance(),history::accept); }
         catch(IOException | RuntimeException e) { journal.close(); throw e; }
         if(account.pending==null) account.pending=new ArrayList<>();
@@ -31,6 +35,8 @@ public class PaperBroker {
         log.info("PAPER ACCOUNT restored: cash={} open={} pending={} history={}",account.cash,account.positions.size(),account.pending.size(),Path.of(settings.dataDir()).toAbsolutePath());
     }
     public synchronized Account snapshot() { return journal.copy(account); }
+    /** Receives the structured data of every fully closed trade (resultR, mfeR, maeR…). */
+    public synchronized void onClose(java.util.function.Consumer<Map<String,Object>> listener) { closeListener=listener; }
     public record View(Account account, Map<String,Quote> marks, List<ClosedTrade> trades,
                        List<WalletPoint> wallet, List<Activity> activity, long losses, long breakeven,
                        Double profitFactor, boolean halted) {}
@@ -56,7 +62,7 @@ public class PaperBroker {
         if(!cfg.logRejected() || failed) return;
         Map<String,Object> data=new LinkedHashMap<>();
         data.put("symbol",symbol); data.put("side",side); data.put("stage",stage); data.put("filters",List.copyOf(filters));
-        data.put("reference",reference); data.put("candleTime",candleTime); data.put("rejectedAt",System.currentTimeMillis());
+        data.put("reference",reference); data.put("candleTime",candleTime); data.put("rejectedAt",clock.getAsLong());
         commit("REJECTED",symbol+" "+side+" stage="+stage+" reference="+reference+" candle="+candleTime+" filters="+filters,journal.copy(account),data);
     }
     private void commit(String type,String detail,Account next) throws IOException { commit(type,detail,next,null); }
@@ -71,7 +77,7 @@ public class PaperBroker {
         double total=account.cash;
         for(var p:account.positions) {
             Quote q=marks.get(p.symbol);
-            if(q==null || !q.fresh()) return Double.NaN;
+            if(q==null || !q.fresh(clock.getAsLong())) return Double.NaN;
             total+=p.margin+p.direction*(q.mark()-p.entry)*p.quantity;
         }
         return total;
@@ -80,7 +86,7 @@ public class PaperBroker {
         return tryOpen(signal,contract,quote).opened();
     }
     public synchronized OpenDecision tryOpen(Signal signal,Contract contract,Quote quote) throws IOException {
-        long now=System.currentTimeMillis();
+        long now=clock.getAsLong();
         String reason=preconditions(signal,contract,quote,now,null);
         if(reason!=null) return rejected(reason);
         int d=signal.direction();
@@ -105,7 +111,7 @@ public class PaperBroker {
                 || contract.step()<=0 || contract.minQty()<0 || contract.minNotional()<0)
             return "Etibarsız rəqəm və ya müqavilə parametri";
         if(signal.score()<Math.max(85,settings.threshold()) || signal.score()>100) return "Siqnal balı minimum "+settings.threshold()+" olmalıdır";
-        if(!quote.fresh()) return "Qiymət köhnədir və ya etibarsızdır";
+        if(!quote.fresh(now)) return "Qiymət köhnədir və ya etibarsızdır";
         if(quote.spreadBps()>settings.maxSpreadBps()) return "Spread limitdən yüksəkdir";
         if(filling==null && (now-signal.candleTime()>FAST_CANDLE_MS+30000 || signal.candleTime()>now)) return "Siqnal şamının vaxtı etibarsızdır";
         if(!contract.symbol().equals(signal.symbol())) return "Siqnal və müqavilə uyğun deyil";
@@ -217,7 +223,7 @@ public class PaperBroker {
         double fee=qty*entry*settings.feeRate(),margin=qty*entry/settings.leverage();
         if(margin+fee>account.cash || margin>budget+1e-8) return rejected("Sərbəst balans kifayət deyil");
         Account next=journal.copy(account); Position p=new Position();
-        p.id=UUID.randomUUID().toString(); p.symbol=signal.symbol(); p.direction=d; p.openedAt=System.currentTimeMillis();
+        p.id=UUID.randomUUID().toString(); p.symbol=signal.symbol(); p.direction=d; p.openedAt=clock.getAsLong();
         p.entry=entry; p.quantity=qty; p.initialQuantity=qty; p.margin=margin; p.risk=risk; p.atr=signal.atr();
         p.stop=stop; p.tp1=entry+d*p.risk; p.tp2=entry+d*2*p.risk; p.tp3=entry+d*3*p.risk;
         p.signal=signal; p.realized=-fee;
@@ -248,9 +254,9 @@ public class PaperBroker {
         return c.slProximityAtr()*atr;
     }
     public synchronized void mark(String symbol,Quote quote) throws IOException {
-        if(!quote.fresh()) { log.warn("STALE quote {}; position cannot be managed until fresh data arrives",symbol); return; }
+        long now=clock.getAsLong();
+        if(!quote.fresh(now)) { log.warn("STALE quote {}; position cannot be managed until fresh data arrives",symbol); return; }
         marks.put(symbol,quote);
-        long now=System.currentTimeMillis();
         if(fillPending(symbol,quote,now)) return;
         while(true) {
             Position existing=account.positions.stream().filter(p->p.symbol.equals(symbol)).findFirst().orElse(null);
@@ -274,7 +280,7 @@ public class PaperBroker {
         p.maeR=Math.max(p.maeR,-p.direction*(adversePrice-p.entry)/p.risk);
     }
     private boolean expired(Position p) {
-        return settings.maxHoldMs()>0 && System.currentTimeMillis()-p.openedAt>settings.maxHoldMs();
+        return settings.maxHoldMs()>0 && clock.getAsLong()-p.openedAt>settings.maxHoldMs();
     }
     /** Price a stop or target fills at, with the same slippage the live path applies. */
     private double fill(double level,int direction) { return level*(1-direction*settings.slippageBps()/10000); }
@@ -329,7 +335,7 @@ public class PaperBroker {
         double pnl=p.direction*(price-p.entry)*qty-fee;
         next.cash+=margin+pnl; next.fees+=fee; next.realized+=pnl; p.realized+=pnl;
         p.quantity-=qty; p.margin-=margin;
-        long now=System.currentTimeMillis();
+        long now=clock.getAsLong();
         Map<String,Object> data=null;
         String measured="";
         if(fraction==1) {
@@ -353,6 +359,7 @@ public class PaperBroker {
         }
         else { p.stage++; p.stop=p.stage==1?p.entry:p.entry+p.direction*p.risk; }
         commit(reason,p.symbol+" id="+p.id+" exit="+price+" quantity="+qty+" netPnl="+pnl+" remaining="+p.quantity+" newSL="+p.stop+measured,next,data);
+        if(data!=null) closeListener.accept(Map.copyOf(data));
     }
     @PreDestroy public synchronized void shutdown() throws IOException { journal.close(); }
 }

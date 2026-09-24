@@ -7,7 +7,7 @@ import org.springframework.scheduling.annotation.EnableScheduling;
 
 @SpringBootApplication
 @EnableScheduling
-@EnableConfigurationProperties({Settings.class, Strategy.class})
+@EnableConfigurationProperties({Settings.class, Strategy.class, Feed.class})
 public class Application {
     public static void main(String[] args) { SpringApplication.run(Application.class, args); }
 }

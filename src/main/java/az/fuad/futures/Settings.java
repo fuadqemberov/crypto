@@ -13,7 +13,7 @@ public record Settings(boolean enabled, String baseUrl, String dataDir, double i
                 || initialBalance <= 0 || allocation <= 0 || allocation > .07 || leverage < 1 || leverage > 3
                 || maxPositions < 1 || maxPositions > 10 || threshold < 85 || threshold > 100
                 || feeRate < 0 || feeRate > .01 || slippageBps < 0 || slippageBps > 100
-                || requestSpacingMs < 250
+                || requestSpacingMs < 20
                 || minQuoteVolume < 0 || maxSpreadBps <= 0
                 || riskPerTrade <= 0 || riskPerTrade > .01
                 || maxHoldMs < 0 || (maxHoldMs > 0 && maxHoldMs < 900000)
