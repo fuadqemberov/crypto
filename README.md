@@ -64,7 +64,7 @@ Bal bölgüsü:
 | 1h RSI momentum | 5 |
 | **Cəmi** | **100** |
 
-**Məcburi filtrlər baldan asılı deyil:** 1h/4h trend uyğunluğu, əks 15m trendinin olmaması, ATR/qiymət 0.1–5%, LONG RSI ≤ 78 / SHORT RSI ≥ 22, qiymətin EMA20-dən maksimum 2 ATR uzaqlığı və sonlu/etibarlı indikatorlar. Hər filtr paneldə ayrıca izah edilir. Girişdə TP2 üçün spread, slippage və komissiya nəzərə alınmaqla konservativ risk/gəlir nisbəti ən azı 1.5 olmalıdır.
+**Məcburi filtrlər baldan asılı deyil:** 1h/4h trend uyğunluğu, əks 15m trendinin olmaması, ATR/qiymət aralığı, ifrat RSI, qiymətin 15m EMA20-dən uzaqlığı (default 1.5 ATR, icra qiyməti ilə yenidən yoxlanılır), breakout gücü (≥ 0.2 ATR), 1h/4h zolaqdan kənar close + stochastic ifratı, 1h həcm (≥ 0.8x), struktural stop məsafəsi (≤ 3 ATR), BTC 1h rejimi və sonlu/etibarlı indikatorlar. Bütün hədlər `bot.strategy.*` altındadır (`application.properties`), izah mətnləri həmin dəyərləri göstərir. Hər filtr paneldə ayrıca izah edilir. Girişdə TP2 üçün spread, slippage və komissiya nəzərə alınmaqla konservativ risk/gəlir nisbəti ən azı 1.5 olmalıdır.
 
 **Yalnız 85/100 və yuxarı** siqnallar order mərhələsinə keçir. Hədd konfiqurasiyada, `Scanner` və birbaşa `PaperBroker.tryOpen` daxilində tətbiq edilir; 85-dən aşağı konfigurasiya qəbul edilmir. `NaN`, sonsuz və 100-dən böyük bal rədd olunur. `--bot.threshold=90` ilə həddi yüksəltmək mümkündür. Minimum balı keçmək orderə zəmanət vermir: hesab limiti, təzə qiymət, təkrar şam, spread, funding və ölçü filtrləri də keçilməlidir.
 
@@ -75,15 +75,15 @@ Bal bölgüsü:
 - İlkin cash: $2,000. Hər girişin marjası cari equity-nin 7%-idir (lot addımına görə aşağı yuvarlaqlaşdırılır); komissiya ayrıca ödənir. Standart 3× leverage ilə ilk order təxminən $140 marja, $420 mövqe və $0.21 giriş komissiyasıdır. Kifayət qədər cash yoxdursa, kiçik order əvəzinə giriş rədd edilir. 1× leverage ilə qiymətin 1% dəyişməsi $140 mövqedə təxminən $1.40 brutto nəticədir.
 - Eyni anda maksimum 5 mövqe, hər simvola 1 mövqe. Standart leverage 3x; konfiqurasiya 1–3x qəbul edir. Mövcud açıq mövqelər üçün təzə mark qiyməti yoxdursa yeni order buraxılır.
 - Miqdar LOT_SIZE addımına aşağı yuvarlaqlaşdırılır, minimum miqdar və notional yoxlanır. Balans çatmırsa ölçü azalır və ya order açılmır.
-- Başlanğıc SL: girişdən 2×ATR. TP1/TP2/TP3: 1R/2R/3R; hərəsində ilkin miqdarın təxminən üçdə biri bağlanır. TP1-dən sonra SL girişə, TP2-dən sonra +1R-ə keçir.
-- Mark qiyməti SL məsafəsinin son 15%-nə girəndə `SL_PROXIMITY` ilə avtomatik çıxış. SL keçilibsə `STOP_LOSS`. TP-lər icra oluna bilən bid/ask qiyməti ilə yoxlanır.
+- Başlanğıc SL (default, `bot.strategy.structural-stop=true`): min(ən yaxın dəstək, 15m EMA20) − 0.3 ATR, ən azı 1 ATR; 3 ATR-dən genişdirsə ticarət keçilir. Lot dollar riski sabit qalacaq şəkildə stop məsafəsinə görə hesablanır (marja payı yalnız tavandır). TP1/TP2/TP3: 1R/2R/3R; hərəsində ilkin miqdarın təxminən üçdə biri bağlanır. TP1-dən sonra SL girişə, TP2-dən sonra +1R-ə keçir.
+- Mark qiyməti stopa `bot.strategy.sl-proximity-atr` (default 0.05 ATR) qədər yaxınlaşanda `SL_PROXIMITY` ilə çıxış; `sl-proximity-enabled=false` onu söndürür. SL keçilibsə `STOP_LOSS`. TP-lər icra oluna bilən bid/ask qiyməti ilə yoxlanır.
 - Giriş/çıxış komissiyası 0.05%, hər tərəf üçün 3 bps slippage. Spread >15 bps, funding göstəricisi mütləq 0.1%-dən böyük və ya qiymət siqnal qiymətindən 1 ATR uzaqdırsa giriş yoxdur.
 - Real order book dərinliyi, funding ödənişləri, liquidation/ADL və exchange fill modeli daxil deyil. Hissəli virtual çıxışların miqdarı exchange lot qaydasına yenidən yuvarlaqlaşdırılmır.
 - Hər 5 saniyədən sonra monitor dövrü başlayır; API sorğularının müddəti intervala əlavə olunur. Tətbiq bağlı/internet kəsilmiş halda SL/TP işləmir. Açıldıqda mövcud mövqelər ilk təzə qiymətdə idarə edilir; offline dövrdə toxunulmuş TP/SL-lər bərpa edilmir. Gap zamanı çıxış cari bid/ask qiymətindədir, SL qiymətinə zəmanət yoxdur.
 
 ## Davamlı yaddaş
 
-`data/order_history.txt` UTF-8 JSON Lines formatındadır. Hər `INIT`, `SIGNAL`, `OPEN`, TP və SL hadisəsi **append** edilir və `FileChannel.force(true)` ilə diskə göndərilir. Hər sətir hesabın tam snapshot-ını saxlayır; siqnal detalları və bütün indikatorlar da tarixçədədir. Başlanğıcda son tam hadisədən cash, orderlər, TP mərhələləri, fees, realized PnL və son giriş şamı bərpa edilir. Balans hər restartda sıfırlanmır.
+`data/order_history.txt` UTF-8 JSON Lines formatındadır. Hər `INIT`, `SIGNAL`, `OPEN`, TP, SL, `REJECTED` və `LIMIT_*` hadisəsi **append** edilir (`REJECTED` və bağlanışlarda əlavə `data` sahəsi: filtrlər, reference, şam vaxtı; `resultR`, `mfeR`, `maeR`, `holdingMinutes`) və `FileChannel.force(true)` ilə diskə göndərilir. Hər sətir hesabın tam snapshot-ını saxlayır; siqnal detalları və bütün indikatorlar da tarixçədədir. Başlanğıcda son tam hadisədən cash, orderlər, TP mərhələləri, fees, realized PnL və son giriş şamı bərpa edilir. Balans hər restartda sıfırlanmır.
 
 Eyni qovluqda ikinci proses fayl kilidi ilə bloklanır. Crash zamanı yalnız yarımçıq son sətir ayrıca `.bin` faylına köçürülür və atılır. Tam sətirdə korlanma varsa proqram balansı sıfırlamaq əvəzinə dayanır. Yazı xətasında yeni hesab əməliyyatları dayanır. `order_history.txt` silinməməlidir; backup üçün proqramı dayandırıb bütün `data` qovluğunu köçürün. Disk/hardware itkisinə qarşı ayrıca backup lazımdır. Tarixçə avtomatik silinmir, zamanla böyüyür.
 
