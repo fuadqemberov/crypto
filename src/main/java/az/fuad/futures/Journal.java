@@ -53,7 +53,10 @@ public final class Journal implements AutoCloseable {
         channel.position(channel.size()); return current;
     }
     public Event append(String type,String detail,Account account) throws IOException {
-        Event event=new Event(account.sequence,System.currentTimeMillis(),type,detail,account);
+        return append(type,detail,account,null);
+    }
+    public Event append(String type,String detail,Account account,java.util.Map<String,Object> data) throws IOException {
+        Event event=new Event(account.sequence,System.currentTimeMillis(),type,detail,account,data);
         byte[] bytes=(json.writeValueAsString(event)+"\n").getBytes(StandardCharsets.UTF_8);
         ByteBuffer buffer=ByteBuffer.wrap(bytes); while(buffer.hasRemaining()) channel.write(buffer); channel.force(true);
         return event;

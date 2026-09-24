@@ -36,7 +36,7 @@ final class TradeHistory {
                 else breakeven++;
             }
         }
-        if (!event.type().equals("SIGNAL")) {
+        if (!event.type().equals("SIGNAL") && !event.type().equals("REJECTED")) {
             add(wallet, new WalletPoint(event.timestamp(), next.cash + next.positions.stream().mapToDouble(p -> p.margin).sum()));
             add(activity, new Activity(event.timestamp(), event.type(), event.detail()));
         }
