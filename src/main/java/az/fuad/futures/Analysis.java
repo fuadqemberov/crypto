@@ -1,28 +1,70 @@
 package az.fuad.futures;
 
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
+import java.math.BigDecimal;
 import java.util.*;
 import static az.fuad.futures.Models.*;
 
 @Component
 public class Analysis {
-    /** 4h exhaustion limits. A LONG uses the value, a SHORT its mirror at 100. */
-    public static final double MAX_SLOW_RSI=85;
-    public static final double MAX_SLOW_EMA_DISTANCE_ATR=4, MAX_SLOW_RELATIVE_VOLUME=5;
+    private static final Strategy DEFAULTS=Strategy.defaults();
+    private final Strategy cfg;
+    public Analysis() { this(DEFAULTS); }
+    @Autowired public Analysis(Strategy cfg) { this.cfg=cfg; }
+    public Strategy strategy() { return cfg; }
     /**
      * Rejects an entry taken into an exhausted 4h leg. Deliberately RSI only: a stochastic saturates
      * for the whole length of a strong trend, which is the regime this strategy trades, so vetoing
      * on it rejects healthy signals — TRUMPUSDT's 1h stochastic sat at 1.8 inside a clean downtrend
      * whose only problem was that the bot was offline when the stop was hit. 1h RSI is already
      * bounded by the "RSI rejimi" gate; 4h was the timeframe with no mandatory check at all.
+     * (Stochastic does veto in {@link #htfOverextended}, but only together with a close outside the band.)
      *
      * @param slow the 4h indicator map as {@link #indicators} returns it
      */
-    public static boolean exhaustionAllowed(int direction,Map<String,Double> slow) {
+    public static boolean exhaustionAllowed(int direction,Map<String,Double> slow,double maxRsi) {
         double rsi=slow.get("rsi14");
-        if(direction==1) return rsi<=MAX_SLOW_RSI;
-        if(direction==-1) return rsi>=100-MAX_SLOW_RSI;
+        if(direction==1) return rsi<=maxRsi;
+        if(direction==-1) return rsi>=Strategy.mirror(maxRsi);
         return false;
+    }
+    public static boolean exhaustionAllowed(int direction,Map<String,Double> slow) {
+        return exhaustionAllowed(direction,slow,DEFAULTS.rsiMax4h());
+    }
+    /**
+     * A higher-timeframe leg that is both outside its Bollinger band and stochastically saturated.
+     * Either alone is normal in a trend; together they marked the top of AEROUSDT (1h/4h close above
+     * the upper band, stoch 96/97) and ETCUSDT (4h close above the upper band, RSI 76).
+     */
+    public static boolean htfOverextended(int direction,Map<String,Double> m,double stochExtreme) {
+        if(direction==1) return m.get("close")>m.get("bollingerUpper") && m.get("stochasticK")>stochExtreme;
+        if(direction==-1) return m.get("close")<m.get("bollingerLower") && m.get("stochasticK")<Strategy.mirror(stochExtreme);
+        return false;
+    }
+    /** Distance of the close beyond the broken 20-candle level, in ATR; negative when not broken. */
+    public static double breakoutAtr(int direction,double close,double resistance20,double support20,double atr) {
+        if(atr<=0 || direction==0) return Double.NaN;
+        return direction==1?(close-resistance20)/atr:(support20-close)/atr;
+    }
+    public static boolean bollingerInRange(Map<String,Double> m,Strategy c) {
+        double w=m.get("bollingerWidthPct");
+        return w>=c.minBollingerWidthPct() && w<=c.maxBollingerWidthPct();
+    }
+    /**
+     * Stop placed behind structure rather than at a fixed ATR multiple: below the lower of the nearest
+     * support and the 15m EMA20 (mirrored for a SHORT), plus a buffer, and never tighter than
+     * {@code minStopAtr}. The old entry−2×ATR stop sat above EMA20 on ETCUSDT, so an ordinary
+     * pullback to the mean was enough to stop it out.
+     *
+     * @return the stop price
+     */
+    public static double stopPrice(int direction,double price,Double support,Double resistance,double ema20,double atr,Strategy c) {
+        if(!c.structuralStop()) return price-direction*c.atrStopMultiple()*atr;
+        double anchor=direction==1?(support==null?ema20:Math.min(support,ema20)):(resistance==null?ema20:Math.max(resistance,ema20));
+        double stop=anchor-direction*c.stopBufferAtr()*atr;
+        double floor=price-direction*c.minStopAtr()*atr;
+        return direction==1?Math.min(stop,floor):Math.max(stop,floor);
     }
     public static double[] ema(double[] x,int period) {
         if(x.length==0 || period<1) throw new IllegalArgumentException("EMA üçün məlumat və müsbət period lazımdır");
@@ -88,78 +130,150 @@ public class Analysis {
     public Signal analyze(String symbol,List<Candle> fast,List<Candle> hourly,List<Candle> slow) {
         return evaluate(symbol,fast,hourly,slow).signal();
     }
+    /** Numbers in reason texts: plain, no trailing zeros, always the configured value. */
+    static String n(double v) { return Double.isFinite(v)?BigDecimal.valueOf(v).stripTrailingZeros().toPlainString():String.valueOf(v); }
+    private static String f(String format,Object... args) { return String.format(Locale.ROOT,format,args); }
     public Report evaluate(String symbol,List<Candle> fast,List<Candle> hourly,List<Candle> slow) {
         var f=indicators(fast); var h=indicators(hourly); var s=indicators(slow);
         int d=trend(h); if(d==0) d=trend(f);
+        Candle a=fast.get(fast.size()-1),b=fast.get(fast.size()-2);
+        double atr=f.get("atr14"),close=a.close(),ema20=f.get("ema20");
         List<Check> checks=new ArrayList<>();
+        double rsiLong=cfg.rsiScoredMax15m(),rsiGate=cfg.rsiGateMax15m(),rsi1h=cfg.rsiMax1h();
         scored(checks,d!=0 && trend(f)==d,10,"15m trend", "EMA20 / EMA50 / EMA200 uyğunluğu");
         scored(checks,d!=0 && trend(h)==d,10,"1h trend", "Saatlıq trend təsdiqi");
         scored(checks,d!=0 && trend(s)==d,10,"4h trend", "Böyük zaman intervalında trend təsdiqi");
-        scored(checks,f.get("adx14")>=25 && d*(f.get("plusDI")-f.get("minusDI"))>0,10,"ADX və DI", "ADX ≥ 25 və istiqamət uyğunluğu");
+        scored(checks,f.get("adx14")>=cfg.minAdx() && d*(f.get("plusDI")-f.get("minusDI"))>0,10,"ADX və DI", "ADX ≥ "+n(cfg.minAdx())+" və istiqamət uyğunluğu");
         scored(checks,d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,10,"MACD", "15m və 1h momentum eyni istiqamətdə");
         double rsi=f.get("rsi14");
-        scored(checks,d==1?rsi>=50 && rsi<=70:d==-1 && rsi>=30 && rsi<=50,5,"RSI14", "LONG: 50–70 · SHORT: 30–50");
-        scored(checks,d*(f.get("close")-f.get("rollingVwap20"))>0,5,"VWAP", "Qiymət 20 şamlıq VWAP-ın trend tərəfindədir");
-        scored(checks,f.get("relativeVolume")>=1.2 && d*f.get("obvChange20")>0,10,"Həcm və OBV", "Əvvəlki 20 şama nisbətən həcm ≥ 1.2x, OBV uyğunluğu");
-        Candle a=fast.get(fast.size()-1),b=fast.get(fast.size()-2);
+        scored(checks,d==1?rsi>=50 && rsi<=rsiLong:d==-1 && rsi>=Strategy.mirror(rsiLong) && rsi<=50,5,"RSI14",
+                "LONG: 50–"+n(rsiLong)+" · SHORT: "+n(Strategy.mirror(rsiLong))+"–50");
+        scored(checks,d*(close-f.get("rollingVwap20"))>0,5,"VWAP", "Qiymət 20 şamlıq VWAP-ın trend tərəfindədir");
+        scored(checks,f.get("relativeVolume")>=cfg.minRelVol15m() && d*f.get("obvChange20")>0,10,"Həcm və OBV",
+                "Əvvəlki 20 şama nisbətən həcm ≥ "+n(cfg.minRelVol15m())+"x, OBV uyğunluğu");
         double body=Math.abs(a.close()-a.open()),range=a.high()-a.low();
         boolean engulf=d*(a.close()-a.open())>0 && d*(b.close()-b.open())<0 && Math.max(a.open(),a.close())>=Math.max(b.open(),b.close()) && Math.min(a.open(),a.close())<=Math.min(b.open(),b.close());
         double lower=Math.min(a.open(),a.close())-a.low(),upper=a.high()-Math.max(a.open(),a.close());
         boolean pin=d==1?lower>2*body && upper<body:upper>2*body && lower<body;
-        boolean impulse=range>0 && body/range>.65 && d*(a.close()-a.open())>0;
-        scored(checks,d!=0 && (engulf||pin||impulse),10,"Şam təsdiqi", "Engulfing: "+engulf+" · pin bar: "+pin+" · impuls: "+impulse);
-        boolean structure=d==1?a.close()>f.get("resistance20") || (a.low()<=f.get("ema20") && a.close()>f.get("ema20")):
-                a.close()<f.get("support20") || (a.high()>=f.get("ema20") && a.close()<f.get("ema20"));
-        scored(checks,d!=0 && structure,5,"Bazar strukturu", "20 şamlıq səviyyə qırılması və ya EMA20-yə geriçəkilmə");
-        scored(checks,d*f.get("ema50SlopeAtr")>.05 && d*h.get("ema50SlopeAtr")>.05,5,"Trendin meyli", "15m və 1h EMA50 meyli > 0.05 ATR / 5 şam");
-        scored(checks,f.get("bollingerWidthPct")>=.4 && f.get("bollingerWidthPct")<=15,5,"Bollinger diapazonu", "Zolaq eni 0.4–15%: çox dar və ifrat rejimlərə bal verilmir");
+        boolean impulse=range>0 && body/range>cfg.impulseBodyRatio() && d*(a.close()-a.open())>0;
+        scored(checks,d!=0 && (engulf||pin||impulse),10,"Şam təsdiqi", "Engulfing: "+engulf+" · pin bar: "+pin+" · impuls (gövdə/diapazon > "+n(cfg.impulseBodyRatio())+"): "+impulse);
+        // Two entry types. A pullback touches EMA20 and closes back on the trend side; a breakout
+        // closes beyond the 20-candle level. A breakout by a hair (AEROUSDT: 0.05 ATR) is not one.
+        boolean pullback=d==1?a.low()<=ema20 && close>ema20:d==-1 && a.high()>=ema20 && close<ema20;
+        double breakout=breakoutAtr(d,close,f.get("resistance20"),f.get("support20"),atr);
+        boolean broke=d!=0 && breakout>0, strongBreakout=broke && breakout>=cfg.minBreakoutAtr();
+        boolean structure=d!=0 && (pullback || strongBreakout);
+        scored(checks,structure,5,"Bazar strukturu", "20 şamlıq səviyyənin ≥ "+n(cfg.minBreakoutAtr())+" ATR qırılması və ya EMA20-yə geriçəkilmə");
+        scored(checks,d*f.get("ema50SlopeAtr")>cfg.minEmaSlopeAtr() && d*h.get("ema50SlopeAtr")>cfg.minEmaSlopeAtr(),5,"Trendin meyli",
+                "15m və 1h EMA50 meyli > "+n(cfg.minEmaSlopeAtr())+" ATR / 5 şam");
+        // The band filter used to read 15m only, so PYTHUSDT's 4h width of 16.82% passed a "0.4–15%" check.
+        scored(checks,bollingerInRange(f,cfg) && bollingerInRange(s,cfg),5,"Bollinger diapazonu",
+                f("15m eni %.2f%%, 4h eni %.2f%%; hər ikisi %s–%s%% olmalıdır",f.get("bollingerWidthPct"),s.get("bollingerWidthPct"),
+                        n(cfg.minBollingerWidthPct()),n(cfg.maxBollingerWidthPct())));
         double hourlyRsi=h.get("rsi14");
-        scored(checks,d==1?hourlyRsi>=50 && hourlyRsi<=72:d==-1 && hourlyRsi>=28 && hourlyRsi<=50,5,"1h RSI təsdiqi", "Saatlıq momentum həddən artıq yüklənməyib");
+        scored(checks,d==1?hourlyRsi>=50 && hourlyRsi<=rsi1h:d==-1 && hourlyRsi>=Strategy.mirror(rsi1h) && hourlyRsi<=50,5,"1h RSI təsdiqi",
+                "Saatlıq RSI LONG 50–"+n(rsi1h)+" / SHORT "+n(Strategy.mirror(rsi1h))+"–50");
         Map<String,Double> all=new LinkedHashMap<>();
         f.forEach((k,v)->all.put("15m."+k,v)); h.forEach((k,v)->all.put("1h."+k,v)); s.forEach((k,v)->all.put("4h."+k,v));
-        double atr=f.get("atr14"),risk=2*atr;
-        gate(checks,d!=0 && trend(h)==d && trend(s)==d && trend(f)!=-d,"Zaman intervalları", "1h və 4h eyni istiqamətdə; 15m əks trenddə deyil");
-        gate(checks,atr/a.close()>=.001 && atr/a.close()<=.05 && risk>0,"Volatilite limiti", "ATR / qiymət 0.1–5% aralığında olmalıdır");
-        gate(checks,d==1?rsi<=78:d==-1 && rsi>=22,"İfrat RSI filtri", "LONG RSI ≤ 78; SHORT RSI ≥ 22");
-        gate(checks,f.get("emaDistanceAtr")<=2,"Gec giriş filtri", "Qiymət EMA20-dən maksimum 2 ATR uzaqdadır");
-        // Every mandatory filter above reads 15m only, so a parabolic 4h blow-off can pass them all
-        // while the higher timeframes are exhausted. These three gates close that hole.
-        gate(checks,exhaustionAllowed(d,s),"4h ifrat rejimi",
-                String.format(Locale.ROOT,"4h RSI %.1f; LONG ≤ %.0f / SHORT ≥ %.0f",s.get("rsi14"),MAX_SLOW_RSI,100-MAX_SLOW_RSI));
-        gate(checks,s.get("emaDistanceAtr")<=MAX_SLOW_EMA_DISTANCE_ATR,"4h gec giriş filtri",
-                String.format(Locale.ROOT,"Qiymət 4h EMA20-dən %.2f ATR uzaqdadır; limit %.0f",
-                        s.get("emaDistanceAtr"),MAX_SLOW_EMA_DISTANCE_ATR));
-        gate(checks,s.get("relativeVolume")<=MAX_SLOW_RELATIVE_VOLUME,"Blow-off həcm filtri",
-                String.format(Locale.ROOT,"4h həcm 20 şam ortalamasının %.2f qatıdır; limit %.0f",
-                        s.get("relativeVolume"),MAX_SLOW_RELATIVE_VOLUME));
-        gate(checks,d!=0 && structure && (engulf||pin||impulse),"Giriş strukturu", "Səviyyə qırılması və ya EMA20 geriçəkilməsi şam təsdiqi ilə birlikdə tələb olunur");
-        gate(checks,f.get("relativeVolume")>=1.2 && d*f.get("obvChange20")>0,"Həcm təsdiqi", "Həcm ≥ 1.2x və OBV istiqaməti məcburidir");
-        gate(checks,f.get("adx14")>=25 && d*(f.get("plusDI")-f.get("minusDI"))>0
-                && d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,
-                "Momentum təsdiqi", "ADX/DI və 15m/1h MACD eyni istiqamətdə olmalıdır");
-        // The 15m ceiling is deliberately looser than the scored 50–70 band: an impulse entry often
-        // prints a 15m RSI in the low seventies, and the exhaustion that actually hurts shows up on
-        // 1h and 4h, which the gates below cover.
-        gate(checks,d==1?rsi>=50 && rsi<=76 && hourlyRsi>=50 && hourlyRsi<=72
-                :d==-1 && rsi>=24 && rsi<=50 && hourlyRsi>=28 && hourlyRsi<=50,
-                "RSI rejimi",String.format(Locale.ROOT,"15m RSI %.2f; 1h RSI %.2f. LONG 50–76 / 50–72, SHORT 24–50 / 28–50",rsi,hourlyRsi));
-        gate(checks,d*f.get("rsiChange")>=0,"RSI meyli",
-                String.format(Locale.ROOT,"Son bağlanmış 15m şamda RSI dəyişməsi %.3f; momentum istiqamətə əks zəifləməməlidir",f.get("rsiChange")));
-        gate(checks,d*f.get("macdHistogramChange")>0 && d*h.get("macdHistogramChange")>=0,
-                "MACD sürəti",String.format(Locale.ROOT,"15m line %.6f / signal %.6f / histogram dəyişməsi %.6f; 1h dəyişmə %.6f",
-                f.get("macdLine"),f.get("macdSignal"),f.get("macdHistogramChange"),h.get("macdHistogramChange")));
-        Levels levels=mergeLevels(a.close(),levels(fast,a.close()),levels(hourly,a.close()),levels(slow,a.close()));
+        Levels levels=mergeLevels(close,levels(fast,close),levels(hourly,close),levels(slow,close));
         if(levels.support()!=null) all.put("nearestSupport",levels.support());
         if(levels.resistance()!=null) all.put("nearestResistance",levels.resistance());
-        gate(checks,hasTargetRoom(d,a.close(),risk,atr,levels),"Dəstək / müqavimət məsafəsi",
+        double stop=d==0?close-cfg.atrStopMultiple()*atr:stopPrice(d,close,levels.support(),levels.resistance(),ema20,atr,cfg);
+        double risk=d==0?cfg.atrStopMultiple()*atr:d*(close-stop);
+        double riskAtr=atr>0?risk/atr:Double.NaN;
+        all.put("stop.price",stop); all.put("stop.distanceAtr",riskAtr);
+        all.put("entry.pullback",pullback?1.0:0.0); all.put("entry.breakoutAtr",broke?breakout:0.0);
+        // The broker re-checks that the fill is still beyond this level; a pullback has none.
+        if(broke && !pullback) all.put("entry.breakoutLevel",d==1?f.get("resistance20"):f.get("support20"));
+        gate(checks,d!=0 && trend(h)==d && trend(s)==d && trend(f)!=-d,"Zaman intervalları", "1h və 4h eyni istiqamətdə; 15m əks trenddə deyil");
+        gate(checks,f.get("atrPct")>=cfg.minAtrPct() && f.get("atrPct")<=cfg.maxAtrPct() && risk>0,"Volatilite limiti",
+                f("ATR / qiymət %.3f%%; %s–%s%% aralığında olmalıdır",f.get("atrPct"),n(cfg.minAtrPct()),n(cfg.maxAtrPct())));
+        gate(checks,d==1?rsi<=cfg.rsiExtreme15m():d==-1 && rsi>=Strategy.mirror(cfg.rsiExtreme15m()),"İfrat RSI filtri",
+                f("15m RSI %.2f; LONG ≤ %s, SHORT ≥ %s",rsi,n(cfg.rsiExtreme15m()),n(Strategy.mirror(cfg.rsiExtreme15m()))));
+        gate(checks,f.get("emaDistanceAtr")<=cfg.maxEmaDistanceAtr15m(),"Gec giriş filtri",
+                f("Siqnal şamında qiymət 15m EMA20-dən %.2f ATR uzaqdadır; limit %s (icra qiyməti ilə yenidən yoxlanılır)",
+                        f.get("emaDistanceAtr"),n(cfg.maxEmaDistanceAtr15m())));
+        // Every mandatory filter above reads 15m only, so a parabolic 4h blow-off can pass them all
+        // while the higher timeframes are exhausted. These gates close that hole.
+        gate(checks,exhaustionAllowed(d,s,cfg.rsiMax4h()),"4h ifrat rejimi",
+                f("4h RSI %.1f; LONG ≤ %s / SHORT ≥ %s",s.get("rsi14"),n(cfg.rsiMax4h()),n(Strategy.mirror(cfg.rsiMax4h()))));
+        gate(checks,s.get("emaDistanceAtr")<=cfg.maxEmaDistanceAtr4h(),"4h gec giriş filtri",
+                f("Qiymət 4h EMA20-dən %.2f ATR uzaqdadır; limit %s",s.get("emaDistanceAtr"),n(cfg.maxEmaDistanceAtr4h())));
+        gate(checks,s.get("relativeVolume")<=cfg.maxRelVol4h(),"Blow-off həcm filtri",
+                f("4h həcm 20 şam ortalamasının %.2f qatıdır; limit %s",s.get("relativeVolume"),n(cfg.maxRelVol4h())));
+        boolean hourStretched=htfOverextended(d,h,cfg.htfStochExtreme()),slowStretched=htfOverextended(d,s,cfg.htfStochExtreme());
+        gate(checks,d!=0 && !hourStretched && !slowStretched,"HTF uzanma filtri",
+                f("1h: close %s zolaqdan kənarda, stoch K %.1f · 4h: close %s zolaqdan kənarda, stoch K %.1f. "
+                        +"Zolaqdan kənar close + K > %s (SHORT: < %s) birlikdə rədd edir",
+                        outside(d,h)?"":"DEYİL",h.get("stochasticK"),outside(d,s)?"":"DEYİL",s.get("stochasticK"),
+                        n(cfg.htfStochExtreme()),n(Strategy.mirror(cfg.htfStochExtreme()))));
+        gate(checks,d!=0 && (pullback || broke) && (engulf||pin||impulse),"Giriş strukturu", "Səviyyə qırılması və ya EMA20 geriçəkilməsi şam təsdiqi ilə birlikdə tələb olunur");
+        gate(checks,d!=0 && (pullback || !broke || strongBreakout),"Breakout təsdiqi",
+                pullback?"EMA20 geriçəkilməsi; breakout tələbi tətbiq olunmur"
+                        :f("Close səviyyədən %.2f ATR kənarda; minimum %s ATR",broke?breakout:0.0,n(cfg.minBreakoutAtr())));
+        gate(checks,f.get("relativeVolume")>=cfg.minRelVol15m() && d*f.get("obvChange20")>0,"Həcm təsdiqi",
+                f("15m həcm %.2fx; ≥ %sx və OBV istiqaməti məcburidir",f.get("relativeVolume"),n(cfg.minRelVol15m())));
+        gate(checks,h.get("relativeVolume")>=cfg.minRelVol1h(),"1h həcm təsdiqi",
+                f("1h həcm %.2fx; minimum %sx",h.get("relativeVolume"),n(cfg.minRelVol1h())));
+        gate(checks,f.get("adx14")>=cfg.minAdx() && d*(f.get("plusDI")-f.get("minusDI"))>0
+                && d*f.get("macdHistogram")>0 && d*h.get("macdHistogram")>0,
+                "Momentum təsdiqi", "ADX ≥ "+n(cfg.minAdx())+", DI və 15m/1h MACD eyni istiqamətdə olmalıdır");
+        // The 15m ceiling is deliberately looser than the scored band: an impulse entry often prints a
+        // 15m RSI above it, and the exhaustion that actually hurts shows up on 1h and 4h.
+        gate(checks,d==1?rsi>=50 && rsi<=rsiGate && hourlyRsi>=50 && hourlyRsi<=rsi1h
+                :d==-1 && rsi>=Strategy.mirror(rsiGate) && rsi<=50 && hourlyRsi>=Strategy.mirror(rsi1h) && hourlyRsi<=50,
+                "RSI rejimi",f("15m RSI %.2f; 1h RSI %.2f. LONG 50–%s / 50–%s, SHORT %s–50 / %s–50",rsi,hourlyRsi,
+                        n(rsiGate),n(rsi1h),n(Strategy.mirror(rsiGate)),n(Strategy.mirror(rsi1h))));
+        gate(checks,d*f.get("rsiChange")>=0,"RSI meyli",
+                f("Son bağlanmış 15m şamda RSI dəyişməsi %.3f; momentum istiqamətə əks zəifləməməlidir",f.get("rsiChange")));
+        gate(checks,d*f.get("macdHistogramChange")>0 && d*h.get("macdHistogramChange")>=0,
+                "MACD sürəti",f("15m line %.6f / signal %.6f / histogram dəyişməsi %.6f; 1h dəyişmə %.6f",
+                f.get("macdLine"),f.get("macdSignal"),f.get("macdHistogramChange"),h.get("macdHistogramChange")));
+        gate(checks,d!=0 && risk>0 && riskAtr<=cfg.maxStopAtr(),"Stop məsafəsi",
+                cfg.structuralStop()
+                        ?f("Struktural stop %s: min(dəstək, EMA20) − %s ATR (minimum %s ATR) = %.2f ATR; limit %s ATR",
+                                n(stop),n(cfg.stopBufferAtr()),n(cfg.minStopAtr()),riskAtr,n(cfg.maxStopAtr()))
+                        :f("Stop %s = qiymət − %s ATR; limit %s ATR",n(stop),n(cfg.atrStopMultiple()),n(cfg.maxStopAtr())));
+        gate(checks,hasTargetRoom(d,close,risk,atr,levels,cfg),"Dəstək / müqavimət məsafəsi",
                 "Təsdiqlənmiş 15m/1h/4h pivotları: dəstək="+levels.support()+"; müqavimət="+levels.resistance()
-                +". TP2 üçün 2R + 0.25 ATR boşluq tələb olunur. Səviyyə yoxdursa maneə naməlumdur.");
+                +". TP2 üçün "+n(cfg.targetRoomR())+"R + "+n(cfg.targetRoomBufferAtr())+" ATR boşluq tələb olunur. Səviyyə yoxdursa maneə naməlumdur.");
         gate(checks,all.values().stream().allMatch(Double::isFinite),"Məlumat keyfiyyəti", "Bütün indikatorlar sonlu rəqəm olmalıdır");
+        all.putAll(quality(cfg,d,f,h,s,pullback,broke?breakout:0,riskAtr));
         double score=checks.stream().mapToInt(Check::points).sum();
-        List<String> reasons=checks.stream().map(c->(c.passed()?"PASS":"FAIL")+" +"+c.points()+" "+c.label()+": "+c.detail()).toList();
         boolean qualified=checks.stream().filter(Check::mandatory).allMatch(Check::passed);
-        Signal signal=qualified?new Signal(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),reasons):null;
-        return new Report(symbol,d,score,a.closeTime(),a.close(),atr,risk,Map.copyOf(all),List.copyOf(checks),signal);
+        Signal signal=qualified?new Signal(symbol,d,score,a.closeTime(),close,atr,risk,Map.copyOf(all),reasons(checks)):null;
+        return new Report(symbol,d,score,a.closeTime(),close,atr,risk,Map.copyOf(all),List.copyOf(checks),signal);
+    }
+    private static boolean outside(int d,Map<String,Double> m) {
+        return d==1?m.get("close")>m.get("bollingerUpper"):d==-1 && m.get("close")<m.get("bollingerLower");
+    }
+    private static double clip(double v) { return Double.isFinite(v)?Math.max(0,Math.min(1,v)):0; }
+    /**
+     * Weighted 0–100 quality score. Unlike the 100-point check score, which every qualifying signal
+     * maxes out, this one grades how good a qualifying setup is. Diagnostic only: it is logged and
+     * journalled with the signal but never opens or blocks a trade.
+     */
+    public static Map<String,Double> quality(Strategy c,int d,Map<String,Double> f,Map<String,Double> h,Map<String,Double> s,
+                                             boolean pullback,double breakoutAtr,double riskAtr) {
+        Map<String,Double> q=new LinkedHashMap<>();
+        if(d==0) { q.put("quality.score",0.0); return q; }
+        double extension=clip(1-f.get("emaDistanceAtr")/c.maxEmaDistanceAtr15m());
+        double breakout=pullback?1:c.minBreakoutAtr()>0?clip(breakoutAtr/(2*c.minBreakoutAtr())):breakoutAtr>0?1:0;
+        double full1h=Math.max(2*c.minRelVol1h(),1e-9);
+        double htfVolume=(clip(h.get("relativeVolume")/full1h)+clip(s.get("relativeVolume")/full1h))/2;
+        double rsi4h=s.get("rsi14"),span=c.rsiMax4h()-50;
+        double htfRoom=span<=0?0:clip(d==1?(c.rsiMax4h()-rsi4h)/span:(rsi4h-Strategy.mirror(c.rsiMax4h()))/span);
+        double stopSpan=c.maxStopAtr()-c.minStopAtr();
+        double stop=stopSpan<=0?1:clip(1-(riskAtr-c.minStopAtr())/stopSpan);
+        double volume=clip(f.get("relativeVolume")/Math.max(2*c.minRelVol15m(),1e-9));
+        double[] w={c.qualityWeightExtension(),c.qualityWeightBreakout(),c.qualityWeightHtfVolume(),c.qualityWeightHtfRoom(),c.qualityWeightStop(),c.qualityWeightVolume()};
+        double[] x={extension,breakout,htfVolume,htfRoom,stop,volume};
+        double total=0,weights=0;
+        for(int i=0;i<w.length;i++) { total+=w[i]*x[i]; weights+=w[i]; }
+        q.put("quality.extension",extension); q.put("quality.breakout",breakout); q.put("quality.htfVolume",htfVolume);
+        q.put("quality.htfRoom",htfRoom); q.put("quality.stop",stop); q.put("quality.volume",volume);
+        q.put("quality.score",weights>0?100*total/weights:0);
+        return q;
     }
     public record Levels(Double support,Double resistance) {}
     public static Levels levels(List<Candle> candles,double price) {
@@ -186,30 +300,58 @@ public class Analysis {
         }
         return new Levels(support,resistance);
     }
-    public static boolean hasTargetRoom(int direction,double price,double risk,double atr,Levels levels) {
-        double distance=2*risk+.25*atr;
+    public static boolean hasTargetRoom(int direction,double price,double risk,double atr,Levels levels,Strategy c) {
+        double distance=c.targetRoomR()*risk+c.targetRoomBufferAtr()*atr;
         if(direction==1) return levels.resistance()==null || levels.resistance()-price>=distance;
         if(direction==-1) return levels.support()==null || price-levels.support()>=distance;
         return false;
     }
-    public static boolean fundingAllowed(int direction,double rate) {
-        return (direction==1 || direction==-1) && Double.isFinite(rate)
-                && Math.abs(rate)<=.001 && direction*rate<=.0003;
+    public static boolean hasTargetRoom(int direction,double price,double risk,double atr,Levels levels) {
+        return hasTargetRoom(direction,price,risk,atr,levels,DEFAULTS);
     }
+    public static boolean fundingAllowed(int direction,double rate,Strategy c) {
+        return (direction==1 || direction==-1) && Double.isFinite(rate)
+                && Math.abs(rate)<=c.maxFundingAbs() && direction*rate<=c.maxFundingPaid();
+    }
+    public static boolean fundingAllowed(int direction,double rate) { return fundingAllowed(direction,rate,DEFAULTS); }
     public Report withFunding(Report report,Quote quote) {
-        var checks=new ArrayList<>(report.checks());
         double rate=quote.funding();
-        gate(checks,quote.fresh() && fundingAllowed(report.direction(),rate),"Funding istiqaməti",
-                "Rate="+String.format(Locale.ROOT,"%.4f%%",rate*100)
-                +" · istiqamət üzrə ödənən rate ≤ 0.03%; mütləq rate ≤ 0.1%. Son açıqlanan rate, gələcək ödəniş zəmanəti deyil");
+        Map<String,Double> extra=Double.isFinite(rate)?Map.of("fundingRatePct",rate*100):Map.of();
+        return withGate(report,quote.fresh() && fundingAllowed(report.direction(),rate,cfg),"Funding istiqaməti",
+                f("Rate=%.4f%% · istiqamət üzrə ödənən rate ≤ %s%%; mütləq rate ≤ %s%%. Son açıqlanan rate, gələcək ödəniş zəmanəti deyil",
+                        rate*100,n(cfg.maxFundingPaid()*100),n(cfg.maxFundingAbs()*100)),extra);
+    }
+    /**
+     * BTC regime filter for altcoins: a LONG needs BTCUSDT 1h EMA20 above EMA50, a SHORT below.
+     * ETCUSDT and PYTHUSDT opened 27 minutes apart and stopped 45 minutes apart on one market-wide
+     * move; nothing looked at the market. Unknown BTC state fails closed.
+     *
+     * @param btcBias +1, -1, 0 (flat) or null (data unavailable)
+     */
+    public Report withBtcFilter(Report report,Integer btcBias) {
+        if(!cfg.btcFilterEnabled() || report.symbol().startsWith("BTC")) return report;
+        boolean pass=btcBias!=null && report.direction()!=0 && btcBias==report.direction();
+        String state=btcBias==null?"məlumat yoxdur":btcBias==1?"EMA20 > EMA50":btcBias==-1?"EMA20 < EMA50":"EMA20 = EMA50";
+        return withGate(report,pass,"BTC filtri","BTCUSDT 1h "+state+"; altcoin "+report.side()+" yalnız BTC eyni istiqamətdə olanda açılır",Map.of());
+    }
+    /** Adds one mandatory check to a finished report; the signal survives only if every gate still passes. */
+    public Report withGate(Report report,boolean pass,String label,String detail,Map<String,Double> extra) {
+        var checks=new ArrayList<>(report.checks());
+        gate(checks,pass,label,detail);
         var indicators=new LinkedHashMap<>(report.indicators());
-        if(Double.isFinite(rate)) indicators.put("fundingRatePct",rate*100);
-        var reasons=checks.stream().map(c->(c.passed()?"PASS":"FAIL")+" "+c.label()+": "+c.detail()).toList();
-        boolean pass=report.signal()!=null && checks.stream().filter(Check::mandatory).allMatch(Check::passed);
-        Signal signal=pass?new Signal(report.symbol(),report.direction(),report.score(),report.candleTime(),
-                report.reference(),report.atr(),report.stopDistance(),Map.copyOf(indicators),reasons):null;
+        indicators.putAll(extra);
+        boolean ok=report.signal()!=null && checks.stream().filter(Check::mandatory).allMatch(Check::passed);
+        Signal signal=ok?new Signal(report.symbol(),report.direction(),report.score(),report.candleTime(),
+                report.reference(),report.atr(),report.stopDistance(),Map.copyOf(indicators),reasons(checks)):null;
         return new Report(report.symbol(),report.direction(),report.score(),report.candleTime(),report.reference(),
                 report.atr(),report.stopDistance(),Map.copyOf(indicators),List.copyOf(checks),signal);
+    }
+    /** Labels of the mandatory gates that failed, for REJECTED journal events. */
+    public static List<String> failedGates(Report report) {
+        return report.checks().stream().filter(c->c.mandatory() && !c.passed()).map(Check::label).toList();
+    }
+    private static List<String> reasons(List<Check> checks) {
+        return checks.stream().map(c->(c.passed()?"PASS":"FAIL")+(c.mandatory()?" [məcburi] ":" +"+c.points()+" ")+c.label()+": "+c.detail()).toList();
     }
     private void scored(List<Check> checks,boolean pass,int points,String label,String detail) {
         checks.add(new Check(label,pass,pass?points:0,points,false,detail));

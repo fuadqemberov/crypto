@@ -44,10 +44,10 @@ class AnalysisTest {
         Map<String,Double> akeSlow=Map.of("rsi14",70.48,"stochasticK",87.90,"emaDistanceAtr",2.00,"relativeVolume",3.06);
         assertFalse(Analysis.exhaustionAllowed(1,zamaSlow));
         assertTrue(Analysis.exhaustionAllowed(1,akeSlow));
-        assertTrue(zamaSlow.get("emaDistanceAtr")>Analysis.MAX_SLOW_EMA_DISTANCE_ATR);
-        assertTrue(zamaSlow.get("relativeVolume")>Analysis.MAX_SLOW_RELATIVE_VOLUME);
-        assertTrue(akeSlow.get("emaDistanceAtr")<=Analysis.MAX_SLOW_EMA_DISTANCE_ATR);
-        assertTrue(akeSlow.get("relativeVolume")<=Analysis.MAX_SLOW_RELATIVE_VOLUME);
+        assertTrue(zamaSlow.get("emaDistanceAtr")>Strategy.defaults().maxEmaDistanceAtr4h());
+        assertTrue(zamaSlow.get("relativeVolume")>Strategy.defaults().maxRelVol4h());
+        assertTrue(akeSlow.get("emaDistanceAtr")<=Strategy.defaults().maxEmaDistanceAtr4h());
+        assertTrue(akeSlow.get("relativeVolume")<=Strategy.defaults().maxRelVol4h());
         // The short side mirrors at 100: BCHUSDT passes, a capitulation low does not.
         assertTrue(Analysis.exhaustionAllowed(-1,Map.of("rsi14",39.44,"stochasticK",35.77)));
         assertFalse(Analysis.exhaustionAllowed(-1,Map.of("rsi14",6.2,"stochasticK",4.8)));
