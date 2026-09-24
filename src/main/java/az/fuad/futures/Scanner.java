@@ -19,10 +19,31 @@ public class Scanner {
     private final Map<String,Long> analyzed=new HashMap<>();
     private final Map<String,Long> lastMark=new HashMap<>();
     private final AtomicBoolean recovered=new AtomicBoolean();
+    private Integer btcBias;
+    private long btcValidUntil;
     public Scanner(Settings settings,BinanceClient client,Analysis analysis,PaperBroker broker,DashboardState dashboard) {
         this.settings=settings; this.client=client; this.analysis=analysis; this.broker=broker;
         this.dashboard=dashboard;
     }
+    /**
+     * BTCUSDT 1h regime: +1 when EMA20 > EMA50, -1 when below, null when unavailable (the filter then
+     * fails closed). Fetched at most once per closed 1h candle.
+     */
+    Integer btcBias() throws InterruptedException {
+        long now=System.currentTimeMillis();
+        if(now<btcValidUntil) return btcBias;
+        try {
+            var candles=client.candles("BTCUSDT","1h");
+            double[] close=candles.stream().mapToDouble(Models.Candle::close).toArray();
+            double e20=Analysis.ema(close,20)[close.length-1],e50=Analysis.ema(close,50)[close.length-1];
+            btcBias=e20>e50?1:e20<e50?-1:0;
+            btcValidUntil=candles.get(candles.size()-1).closeTime()+3600000;
+            log.info("BTC FILTER: BTCUSDT 1h EMA20={} EMA50={} bias={}",e20,e50,btcBias);
+        } catch(InterruptedException e) { throw e; }
+        catch(Exception e) { btcBias=null; btcValidUntil=0; log.warn("BTC FILTER unavailable: {}",e.toString()); }
+        return btcBias;
+    }
+    private static String side(int direction) { return direction==1?"LONG":direction==-1?"SHORT":"NEUTRAL"; }
     /**
      * Books the exits a restored position hit while this process was down, before the live monitor
      * gets a chance to close it at the price that happens to be on the screen after a restart.
@@ -69,29 +90,44 @@ public class Scanner {
                     if(analyzed.getOrDefault(symbol,0L)>=time) continue;
                     var hourly=client.candles(symbol,"1h"); var slow=client.candles(symbol,"4h");
                     var report=analysis.evaluate(symbol,fast,hourly,slow);
-                    var signal=report.signal(); checked++; analyzed.put(symbol,time);
+                    checked++; analyzed.put(symbol,time);
+                    double threshold=Math.max(85,settings.threshold());
+                    boolean candidate=report.direction()!=0 && report.score()>=threshold;
+                    if(candidate) report=analysis.withBtcFilter(report,analysis.strategy().btcFilterEnabled()?btcBias():null);
+                    var signal=report.signal();
                     String decision=report.qualified()?"LOW_SCORE":"BLOCKED";
-                    String detail=report.qualified()?"Bal minimum "+settings.threshold()+" həddinə çatmayıb":"Məcburi keyfiyyət filtri keçilməyib";
-                    if(signal!=null && signal.score()>=Math.max(85,settings.threshold())) {
+                    String detail=report.qualified()?"Bal minimum "+settings.threshold()+" həddinə çatmayıb":"Məcburi keyfiyyət filtri keçilməyib: "+Analysis.failedGates(report);
+                    if(signal!=null && signal.score()>=threshold) {
                         var entryQuote=client.quote(symbol);
                         report=analysis.withFunding(report,entryQuote);
                         signal=report.signal();
                         if(signal==null) {
+                            broker.recordRejected(symbol,report.side(),Analysis.failedGates(report),report.reference(),report.candleTime(),"ANALYSIS");
                             dashboard.record(report,fast,"BLOCKED","Funding filtri keçilməyib");
                             continue;
                         }
                         signals++;
                         broker.recordSignal(signal);
-                        log.info("SIGNAL {} {} score={}/100 (NOT win probability) candle={} reference={} ATR={} SL-distance={}\nChecks: {}\nIndicators: {}",
-                                symbol,signal.direction()==1?"LONG":"SHORT",signal.score(),time,signal.reference(),signal.atr(),signal.stopDistance(),signal.reasons(),signal.indicators());
+                        var q=signal.indicators();
+                        log.info("SIGNAL {} {} score={}/100 (NOT win probability) quality={} [extension={} breakout={} htfVolume={} htfRoom={} stop={} volume={}] candle={} ageSec={} reference={} ATR={} SL={} SL-distance={} ({} ATR)\nChecks: {}\nIndicators: {}",
+                                symbol,side(signal.direction()),signal.score(),fmt(q.get("quality.score")),fmt(q.get("quality.extension")),fmt(q.get("quality.breakout")),
+                                fmt(q.get("quality.htfVolume")),fmt(q.get("quality.htfRoom")),fmt(q.get("quality.stop")),fmt(q.get("quality.volume")),
+                                time,(System.currentTimeMillis()-time)/1000,signal.reference(),signal.atr(),q.get("stop.price"),signal.stopDistance(),fmt(q.get("stop.distanceAtr")),
+                                signal.reasons(),signal.indicators());
                         try {
                             var result=broker.tryOpen(signal,contract,entryQuote);
-                            decision=result.opened()?"OPENED":"EXECUTION_REJECTED"; detail=result.reason();
-                            if(!result.opened()) log.info("SIGNAL {} entry skipped: {}",symbol,result.reason());
+                            decision=result.opened()?"OPENED":result.pending()?"LIMIT_PLACED":"EXECUTION_REJECTED"; detail=result.reason();
+                            if(!result.opened() && !result.pending()) {
+                                log.info("SIGNAL {} entry skipped: {}",symbol,result.reason());
+                                broker.recordRejected(symbol,side(signal.direction()),List.of(result.reason()),signal.reference(),signal.candleTime(),"EXECUTION");
+                            }
                         } catch(Exception e) {
                             dashboard.record(report,fast,"EXECUTION_REJECTED","Order açıla bilmədi: "+e.getMessage());
                             throw e;
                         }
+                    } else if(candidate && signal==null) {
+                        // A high-score setup stopped by a mandatory gate: the measurable "what did the filters prevent".
+                        broker.recordRejected(symbol,report.side(),Analysis.failedGates(report),report.reference(),report.candleTime(),"ANALYSIS");
                     }
                     dashboard.record(report,fast,decision,detail);
                 } catch(InterruptedException e) { Thread.currentThread().interrupt(); return; }
@@ -103,6 +139,7 @@ public class Scanner {
         catch(Exception e) { dashboard.error(e.getMessage()); log.error("SCAN failed: {}",e.toString()); }
         finally { dashboard.finish(); }
     }
+    private static String fmt(Double v) { return v==null?"n/a":String.format(Locale.ROOT,"%.2f",v); }
     @Scheduled(initialDelay=1000,fixedDelayString="${bot.monitor-delay-ms:5000}")
     public void monitor() {
         if(!settings.enabled() || !recovered.get()) return;
